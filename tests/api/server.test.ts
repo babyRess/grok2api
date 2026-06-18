@@ -230,4 +230,103 @@ describe('Anthropic API handler', () => {
     expect(text).toContain('"cache_creation_input_tokens":1');
     expect(text).toContain('event: message_stop');
   });
+
+  it('serves OpenAI-compatible chat completions', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        model: 'grok-composer-2.5-fast',
+        max_output_tokens: 32,
+        instructions: 'Use short answers.',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hello' }] }],
+      });
+      return Response.json({
+        id: 'resp_chat',
+        model: 'grok-composer-2.5-fast',
+        output: [
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'Hi there' }],
+          },
+        ],
+        usage: {
+          input_tokens: 9,
+          output_tokens: 2,
+          cache_read_input_tokens: 4,
+        },
+      });
+    });
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/v1/chat/completions', {
+        model: 'grok-composer-2.5-fast',
+        max_tokens: 32,
+        messages: [
+          { role: 'system', content: 'Use short answers.' },
+          { role: 'user', content: 'Hello' },
+        ],
+      }),
+      {
+        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: 'resp_chat',
+      object: 'chat.completion',
+      model: 'grok-composer-2.5-fast',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'Hi there' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 9,
+        completion_tokens: 2,
+        total_tokens: 11,
+        prompt_tokens_details: { cached_tokens: 4 },
+      },
+    });
+  });
+
+  it('streams OpenAI-compatible chat completion chunks', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      sseResponse([
+        'data: {"type":"response.created","response":{"id":"resp_openai_stream","model":"grok-build"}}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_openai_stream","model":"grok-build","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}\n\n',
+      ]),
+    );
+
+    const stream = await handleAnthropicApiRequest(
+      jsonRequest('/v1/chat/completions', {
+        model: 'grok-build',
+        stream: true,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+      {
+        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    const events = (await stream.text()).split('\n\n').filter(Boolean);
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toMatch(/text\/event-stream/);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('"object":"chat.completion.chunk"'),
+        expect.stringContaining('"delta":{"role":"assistant"}'),
+        expect.stringContaining('"delta":{"content":"Hel"}'),
+        expect.stringContaining('"finish_reason":"stop"'),
+        expect.stringContaining(
+          '"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}',
+        ),
+        'data: [DONE]',
+      ]),
+    );
+  });
 });

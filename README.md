@@ -63,8 +63,9 @@ Configure OpenCode with an Anthropic base URL:
 For a custom OpenCode provider, use `npm: "@ai-sdk/anthropic"` with the same
 `options.baseURL` value.
 
-The API exposes `GET /v1/models`, `POST /v1/messages`, and
-`POST /v1/messages/count_tokens`, plus Claude Code aliases under `/cc/v1`.
+The API exposes `GET /v1/models`, `POST /v1/messages`,
+`POST /v1/messages/count_tokens`, and the OpenAI-compatible
+`POST /v1/chat/completions`, plus Claude Code aliases under `/cc/v1`.
 Client auth accepts either `x-api-key` or `Authorization: Bearer ...` when
 `GROK_BUILD_API_KEY` is set. Upstream Grok Build calls require
 `GROK_BUILD_OAUTH_TOKEN` or `GROK_BUILD_ACCESS_TOKEN`.
@@ -94,6 +95,15 @@ docker run --rm --env-file .env -e GROK_BUILD_API_HOST=0.0.0.0 -p 8990:8990 open
 
 Clients should use the Anthropic-compatible base URL
 `http://127.0.0.1:8990/v1`.
+
+OpenAI-compatible chat completions clients can also call:
+
+```bash
+curl -s http://127.0.0.1:8990/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -d '{"model":"grok-composer-2.5-fast","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' | jq
+```
 
 ### Local checkout
 

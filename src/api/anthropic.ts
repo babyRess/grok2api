@@ -21,6 +21,10 @@ export type AnthropicAdapterOptions = {
   cwd?: string;
 };
 
+export type OpenAIChatCompletionOptions = {
+  created?: number;
+};
+
 export class AnthropicApiError extends Error {
   status: number;
   type: AnthropicErrorType;
@@ -163,6 +167,159 @@ function inputImageUrl(block: JsonRecord): string | undefined {
   }
   if (block.source.type === 'url') return optionalString(block.source.url);
   return optionalString(block.source.url);
+}
+
+function openAIContentBlock(block: unknown): unknown {
+  if (typeof block === 'string') return block;
+  if (!isRecord(block)) return undefined;
+  if (block.type === 'text' && typeof block.text === 'string') return block;
+  if (block.type === 'image_url') {
+    const imageUrl = isRecord(block.image_url) ? block.image_url.url : block.image_url;
+    return typeof imageUrl === 'string'
+      ? { type: 'image', source: { type: 'url', url: imageUrl } }
+      : undefined;
+  }
+  return block;
+}
+
+function openAIMessageContent(value: unknown): unknown {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+  return value.map(openAIContentBlock).filter((block) => block !== undefined);
+}
+
+function anthropicToolUseFromOpenAIToolCall(toolCall: unknown): JsonRecord | undefined {
+  if (!isRecord(toolCall)) return undefined;
+  const callFunction = isRecord(toolCall.function) ? toolCall.function : {};
+  if (typeof callFunction.name !== 'string') return undefined;
+  return {
+    type: 'tool_use',
+    id: optionalString(toolCall.id) ?? `call_${crypto.randomUUID()}`,
+    name: callFunction.name,
+    input: parseJsonRecord(optionalString(callFunction.arguments) ?? '{}'),
+  };
+}
+
+function anthropicMessagesFromOpenAI(value: unknown): JsonRecord[] {
+  if (!Array.isArray(value)) {
+    throw new AnthropicApiError(400, 'invalid_request_error', '`messages` must be an array.');
+  }
+
+  return value.flatMap((message): JsonRecord[] => {
+    if (!isRecord(message)) return [];
+    const role = optionalString(message.role) ?? 'user';
+    if (role === 'system' || role === 'developer') return [];
+    if (role === 'tool') {
+      return [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: optionalString(message.tool_call_id) ?? 'tool_result_unknown',
+              content: openAIMessageContent(message.content),
+            },
+          ],
+        },
+      ];
+    }
+
+    const toolCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls
+          .map(anthropicToolUseFromOpenAIToolCall)
+          .filter((toolCall): toolCall is JsonRecord => !!toolCall)
+      : [];
+    const content = [...contentBlocks(openAIMessageContent(message.content)), ...toolCalls].filter(
+      (block) => block !== undefined,
+    );
+
+    return [{ role: role === 'assistant' ? 'assistant' : 'user', content }];
+  });
+}
+
+function openAISystemFromMessages(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const system = value
+    .flatMap((message): string[] => {
+      if (!isRecord(message)) return [];
+      if (message.role !== 'system' && message.role !== 'developer') return [];
+      return jsonStrings(message.content);
+    })
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  return system || undefined;
+}
+
+function anthropicToolsFromOpenAI(value: unknown): JsonRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const tools = value.flatMap((tool): JsonRecord[] => {
+    if (!isRecord(tool) || tool.type !== 'function' || !isRecord(tool.function)) return [];
+    if (typeof tool.function.name !== 'string') return [];
+    return [
+      {
+        name: tool.function.name,
+        ...(typeof tool.function.description === 'string'
+          ? { description: tool.function.description }
+          : {}),
+        input_schema: isRecord(tool.function.parameters)
+          ? tool.function.parameters
+          : { type: 'object', properties: {} },
+      },
+    ];
+  });
+
+  return tools.length > 0 ? tools : undefined;
+}
+
+function anthropicToolChoiceFromOpenAI(value: unknown): unknown {
+  if (value === 'required') return 'any';
+  if (value === 'auto' || value === 'none') return value;
+  if (!isRecord(value)) return undefined;
+  if (value.type !== 'function' || !isRecord(value.function)) return undefined;
+  return typeof value.function.name === 'string'
+    ? { type: 'tool', name: value.function.name }
+    : undefined;
+}
+
+export function openAIChatCompletionToAnthropicMessages(body: unknown) {
+  if (!isRecord(body)) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      'Request body must be a JSON object.',
+    );
+  }
+
+  const model = optionalString(body.model);
+  if (!model) throw new AnthropicApiError(400, 'invalid_request_error', '`model` is required.');
+
+  const anthropic: JsonRecord = {
+    model,
+    messages: anthropicMessagesFromOpenAI(body.messages),
+  };
+
+  const system = openAISystemFromMessages(body.messages);
+  if (system) anthropic.system = system;
+  if (optionalNumber(body.max_tokens) !== undefined) anthropic.max_tokens = body.max_tokens;
+  if (optionalNumber(body.max_completion_tokens) !== undefined) {
+    anthropic.max_tokens = body.max_completion_tokens;
+  }
+  if (optionalNumber(body.temperature) !== undefined) anthropic.temperature = body.temperature;
+  if (optionalNumber(body.top_p) !== undefined) anthropic.top_p = body.top_p;
+  if (typeof body.stream === 'boolean') anthropic.stream = body.stream;
+  if (typeof body.stop === 'string') anthropic.stop_sequences = [body.stop];
+  if (Array.isArray(body.stop)) anthropic.stop_sequences = body.stop;
+
+  const tools = anthropicToolsFromOpenAI(body.tools);
+  if (tools) anthropic.tools = tools;
+
+  const toolChoice = anthropicToolChoiceFromOpenAI(body.tool_choice);
+  if (toolChoice) anthropic.tool_choice = toolChoice;
+
+  return anthropic;
 }
 
 function responseContentPart(block: unknown, role: string): JsonRecord | undefined {
@@ -446,6 +603,79 @@ function usageFromResponses(value: unknown) {
   };
 }
 
+function openAIUsageFromAnthropicUsage(value: unknown) {
+  const usage = isRecord(value) ? value : {};
+  const promptTokens = optionalNumber(usage.input_tokens) ?? 0;
+  const completionTokens = optionalNumber(usage.output_tokens) ?? 0;
+  const cachedTokens = optionalNumber(usage.cache_read_input_tokens);
+
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+    ...(cachedTokens !== undefined
+      ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+      : {}),
+  };
+}
+
+function openAIFinishReason(stopReason: unknown) {
+  if (stopReason === 'tool_use') return 'tool_calls';
+  if (stopReason === 'max_tokens') return 'length';
+  if (stopReason === 'stop_sequence' || stopReason === 'end_turn') return 'stop';
+  return 'stop';
+}
+
+function openAIMessageFromAnthropicContent(content: unknown) {
+  const contentItems = Array.isArray(content) ? content : [];
+  const text = contentItems
+    .flatMap((part): string[] =>
+      isRecord(part) && typeof part.text === 'string' ? [part.text] : [],
+    )
+    .join('');
+  const toolCalls = contentItems.flatMap((part, index): JsonRecord[] => {
+    if (!isRecord(part) || part.type !== 'tool_use') return [];
+    return [
+      {
+        id: optionalString(part.id) ?? `call_${index}`,
+        type: 'function',
+        function: {
+          name: optionalString(part.name) ?? 'tool',
+          arguments: JSON.stringify(isRecord(part.input) ? part.input : {}),
+        },
+      },
+    ];
+  });
+
+  return {
+    role: 'assistant',
+    content: toolCalls.length > 0 ? text || null : text,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
+}
+
+export function responsesJsonToOpenAIChatCompletion(
+  value: unknown,
+  requestedModel?: string,
+  options: OpenAIChatCompletionOptions = {},
+) {
+  const message = responsesJsonToAnthropicMessage(value, requestedModel);
+  return {
+    id: message.id,
+    object: 'chat.completion',
+    created: options.created ?? Math.floor(Date.now() / 1000),
+    model: message.model,
+    choices: [
+      {
+        index: 0,
+        message: openAIMessageFromAnthropicContent(message.content),
+        finish_reason: openAIFinishReason(message.stop_reason),
+      },
+    ],
+    usage: openAIUsageFromAnthropicUsage(message.usage),
+  };
+}
+
 function stopReasonFromResponses(response: JsonRecord, hasToolUse: boolean) {
   if (hasToolUse) return 'tool_use';
   if (response.status === 'incomplete') return 'max_tokens';
@@ -486,6 +716,27 @@ export function responsesJsonToAnthropicMessage(value: unknown, requestedModel?:
 
 function sse(event: string, data: JsonRecord) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function openAIChatCompletionChunk(
+  id: string,
+  model: string,
+  delta: JsonRecord,
+  finishReason: string | null = null,
+  usage?: JsonRecord,
+) {
+  return {
+    id,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function openAISse(data: JsonRecord | '[DONE]') {
+  return `data: ${data === '[DONE]' ? data : JSON.stringify(data)}\n\n`;
 }
 
 function frameBoundary(buffer: string): { index: number; length: number } | undefined {
@@ -871,6 +1122,134 @@ export function responsesStreamToAnthropicSse(body: ReadableStream<Uint8Array>, 
             message: cause instanceof Error ? cause.message : String(cause),
           },
         });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+}
+
+export function responsesStreamToOpenAIChatCompletionsSse(
+  body: ReadableStream<Uint8Array>,
+  model: string,
+) {
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      let id = `chatcmpl_${crypto.randomUUID()}`;
+      let responseModel = model;
+      let roleSent = false;
+      const toolIndexes = new Map<string, number>();
+
+      const enqueue = (chunk: JsonRecord | '[DONE]') => {
+        controller.enqueue(encoder.encode(openAISse(chunk)));
+      };
+
+      try {
+        for await (const item of upstreamSseEvents(body)) {
+          const type = eventType(item.event, item.data);
+          const event = isRecord(item.data) ? item.data : {};
+
+          if (type === 'response.created') {
+            const response = responseRecordFromEvent(event);
+            id = optionalString(response.id) ?? id;
+            responseModel = optionalString(response.model) ?? responseModel;
+            enqueue(openAIChatCompletionChunk(id, responseModel, { role: 'assistant' }));
+            roleSent = true;
+            continue;
+          }
+
+          if (!roleSent) {
+            enqueue(openAIChatCompletionChunk(id, responseModel, { role: 'assistant' }));
+            roleSent = true;
+          }
+
+          if (type === 'response.output_text.delta') {
+            enqueue(
+              openAIChatCompletionChunk(id, responseModel, {
+                content: optionalString(event.delta) ?? optionalString(event.text) ?? '',
+              }),
+            );
+            continue;
+          }
+
+          if (type === 'response.output_item.added' && isRecord(event.item)) {
+            if (event.item.type !== 'function_call') continue;
+            const key = streamToolKey(event.item);
+            const index = toolIndexes.size;
+            toolIndexes.set(key, index);
+            enqueue(
+              openAIChatCompletionChunk(id, responseModel, {
+                tool_calls: [
+                  {
+                    index,
+                    id: optionalString(event.item.call_id) ?? optionalString(event.item.id) ?? key,
+                    type: 'function',
+                    function: {
+                      name: optionalString(event.item.name) ?? 'tool',
+                      arguments: '',
+                    },
+                  },
+                ],
+              }),
+            );
+            continue;
+          }
+
+          if (type === 'response.function_call_arguments.delta') {
+            const key = streamToolKey(event);
+            const index = toolIndexes.get(key) ?? toolIndexes.size;
+            if (!toolIndexes.has(key)) toolIndexes.set(key, index);
+            enqueue(
+              openAIChatCompletionChunk(id, responseModel, {
+                tool_calls: [
+                  {
+                    index,
+                    function: { arguments: optionalString(event.delta) ?? '' },
+                  },
+                ],
+              }),
+            );
+            continue;
+          }
+
+          if (type === 'response.completed') {
+            const message = responsesJsonToAnthropicMessage(
+              responseRecordFromEvent(event),
+              responseModel,
+            );
+            enqueue(
+              openAIChatCompletionChunk(
+                id,
+                message.model,
+                {},
+                openAIFinishReason(message.stop_reason),
+                openAIUsageFromAnthropicUsage(message.usage),
+              ),
+            );
+            enqueue('[DONE]');
+            continue;
+          }
+
+          if (type === 'response.failed' || type === 'error') {
+            const error = isRecord(event.error) ? event.error : event;
+            enqueue({
+              error: {
+                type: optionalString(error.type) ?? 'api_error',
+                message: optionalString(error.message) ?? 'Upstream Responses stream failed.',
+              },
+            });
+            enqueue('[DONE]');
+          }
+        }
+      } catch (cause) {
+        enqueue({
+          error: {
+            type: 'api_error',
+            message: cause instanceof Error ? cause.message : String(cause),
+          },
+        });
+        enqueue('[DONE]');
       } finally {
         controller.close();
       }

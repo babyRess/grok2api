@@ -9,8 +9,11 @@ import {
   clientAuthError,
   countAnthropicTokens,
   grokResponsesHeaders,
+  openAIChatCompletionToAnthropicMessages,
   responsesJsonToAnthropicMessage,
+  responsesJsonToOpenAIChatCompletion,
   responsesStreamToAnthropicSse,
+  responsesStreamToOpenAIChatCompletionsSse,
   sessionIdFromHeaders,
   upstreamResponsesUrl,
   upstreamToken,
@@ -70,8 +73,60 @@ function routeIsMessages(pathname: string) {
   return pathname === '/v1/messages' || pathname === '/cc/v1/messages';
 }
 
+function routeIsChatCompletions(pathname: string) {
+  return pathname === '/v1/chat/completions';
+}
+
 function routeIsCountTokens(pathname: string) {
   return pathname === '/v1/messages/count_tokens' || pathname === '/cc/v1/messages/count_tokens';
+}
+
+async function fetchUpstreamResponses(
+  request: Request,
+  options: AnthropicApiHandlerOptions,
+  payload: Record<string, unknown>,
+  token: string,
+) {
+  const model = typeof payload.model === 'string' ? payload.model : '';
+  const headers = grokResponsesHeaders(token, model, sessionIdFromHeaders(request.headers));
+  if (payload.stream === true) headers.set('accept', 'text/event-stream');
+
+  const response = await (options.fetch ?? fetch)(upstreamResponsesUrl(), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  return { model, response };
+}
+
+function eventStreamResponse(body: ReadableStream<Uint8Array>) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+async function responseFromUpstream(
+  request: Request,
+  options: AnthropicApiHandlerOptions,
+  payload: Record<string, unknown>,
+  token: string,
+  stream: (body: ReadableStream<Uint8Array>, model: string) => ReadableStream<Uint8Array>,
+  json: (body: unknown, model: string) => unknown,
+) {
+  const { model, response } = await fetchUpstreamResponses(request, options, payload, token);
+
+  if (!response.ok) return upstreamErrorResponse(response);
+  if (payload.stream !== true) return Response.json(json(await response.json(), model));
+  if (!response.body) {
+    return anthropicErrorResponse(502, 'Upstream Grok Build stream response had no body.');
+  }
+  return eventStreamResponse(stream(response.body, model));
 }
 
 async function handleMessages(request: Request, options: AnthropicApiHandlerOptions) {
@@ -88,33 +143,39 @@ async function handleMessages(request: Request, options: AnthropicApiHandlerOpti
   const payload = anthropicMessagesToResponsesPayload(body, request.headers, {
     cwd: options.cwd,
   });
-  const model = typeof payload.model === 'string' ? payload.model : '';
-  const headers = grokResponsesHeaders(token, model, sessionIdFromHeaders(request.headers));
-  if (payload.stream === true) headers.set('accept', 'text/event-stream');
+  return responseFromUpstream(
+    request,
+    options,
+    payload,
+    token,
+    responsesStreamToAnthropicSse,
+    responsesJsonToAnthropicMessage,
+  );
+}
 
-  const response = await (options.fetch ?? fetch)(upstreamResponsesUrl(), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) return upstreamErrorResponse(response);
-
-  if (payload.stream === true) {
-    if (!response.body) {
-      return anthropicErrorResponse(502, 'Upstream Grok Build stream response had no body.');
-    }
-    return new Response(responsesStreamToAnthropicSse(response.body, model), {
-      status: 200,
-      headers: {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive',
-      },
-    });
+async function handleChatCompletions(request: Request, options: AnthropicApiHandlerOptions) {
+  const token = upstreamToken(options.env ?? process.env);
+  if (!token) {
+    return anthropicErrorResponse(
+      401,
+      'GROK_BUILD_OAUTH_TOKEN or GROK_BUILD_ACCESS_TOKEN is required for /chat/completions.',
+      'authentication_error',
+    );
   }
 
-  return Response.json(responsesJsonToAnthropicMessage(await response.json(), model));
+  const payload = anthropicMessagesToResponsesPayload(
+    openAIChatCompletionToAnthropicMessages(await requestJson(request)),
+    request.headers,
+    { cwd: options.cwd },
+  );
+  return responseFromUpstream(
+    request,
+    options,
+    payload,
+    token,
+    responsesStreamToOpenAIChatCompletionsSse,
+    responsesJsonToOpenAIChatCompletion,
+  );
 }
 
 export async function handleAnthropicApiRequest(
@@ -142,6 +203,10 @@ export async function handleAnthropicApiRequest(
 
     if (request.method === 'POST' && routeIsMessages(pathname)) {
       return handleMessages(request, options);
+    }
+
+    if (request.method === 'POST' && routeIsChatCompletions(pathname)) {
+      return handleChatCompletions(request, options);
     }
 
     return anthropicErrorResponse(404, `Route not found: ${request.method} ${pathname}.`);
