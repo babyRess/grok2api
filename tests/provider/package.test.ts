@@ -15,6 +15,8 @@ describe('repository layout', () => {
     const files = globSync('src/**/*.{ts,tsx}').sort();
     for (const required of [
       'src/auth/oauth.ts',
+      'src/api/index.ts',
+      'src/api/server.ts',
       'src/opencode/billing.ts',
       'src/opencode/plugin.ts',
       'src/opencode/tui.tsx',

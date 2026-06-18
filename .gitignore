@@ -1,6 +1,11 @@
 node_modules/
 coverage
 dist/
+.env
+.env.*
+!.env.example
+.claude/
+.gitnexus/
 docs/
 *.tgz
 .DS_Store

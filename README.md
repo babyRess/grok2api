@@ -32,6 +32,69 @@ This registers both the server plugin (models, OAuth, payload sanitization) and 
 
 Or set `GROK_BUILD_OAUTH_TOKEN` for a static token bypass (no auto-refresh).
 
+### Anthropic-compatible local API
+
+OpenCode can also use this project through its Anthropic provider:
+
+```bash
+export GROK_BUILD_OAUTH_TOKEN="xai-oauth-access-token"
+export GROK_BUILD_API_KEY="local-client-key" # optional, enables client auth
+bun run api
+```
+
+The server listens on `http://127.0.0.1:8990` by default. Override with
+`GROK_BUILD_API_HOST` and `GROK_BUILD_API_PORT`.
+
+Configure OpenCode with an Anthropic base URL:
+
+```json
+{
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "http://127.0.0.1:8990/v1",
+        "apiKey": "local-client-key"
+      }
+    }
+  }
+}
+```
+
+For a custom OpenCode provider, use `npm: "@ai-sdk/anthropic"` with the same
+`options.baseURL` value.
+
+The API exposes `GET /v1/models`, `POST /v1/messages`, and
+`POST /v1/messages/count_tokens`, plus Claude Code aliases under `/cc/v1`.
+Client auth accepts either `x-api-key` or `Authorization: Bearer ...` when
+`GROK_BUILD_API_KEY` is set. Upstream Grok Build calls require
+`GROK_BUILD_OAUTH_TOKEN` or `GROK_BUILD_ACCESS_TOKEN`.
+
+#### Docker
+
+Create a local env file. It is ignored by git and Docker build context.
+
+```bash
+cp .env.example .env
+```
+
+Fill `GROK_BUILD_OAUTH_TOKEN` or `GROK_BUILD_ACCESS_TOKEN` with an upstream
+xAI/Grok Build access token. Set `GROK_BUILD_API_KEY` in `.env` to any local
+client key you want callers to use, then run:
+
+```bash
+docker compose up --build
+```
+
+Or without Compose:
+
+```bash
+docker build -t open-grok-build:local .
+docker run --rm --env-file .env -e GROK_BUILD_API_HOST=0.0.0.0 -p 8990:8990 open-grok-build:local
+```
+
+Clients should use the Anthropic-compatible base URL
+`http://127.0.0.1:8990/v1`.
+
 ### Local checkout
 
 For development, use an absolute path:
@@ -79,6 +142,10 @@ The plugin transparently rewrites outgoing requests to handle xAI's Responses AP
 | `GROK_BUILD_CALLBACK_HOST` | `127.0.0.1` | OAuth loopback callback host |
 | `GROK_BUILD_CALLBACK_PORT` | `56122` | OAuth loopback callback port |
 | `GROK_BUILD_OAUTH_TOKEN` | — | Static token bypass (skips OAuth, no refresh) |
+| `GROK_BUILD_ACCESS_TOKEN` | — | Static upstream access token for the Anthropic-compatible API |
+| `GROK_BUILD_API_KEY` | — | Optional client API key for the Anthropic-compatible API |
+| `GROK_BUILD_API_HOST` | `127.0.0.1` | Anthropic-compatible API host |
+| `GROK_BUILD_API_PORT` | `8990` | Anthropic-compatible API port |
 | `GROK_BUILD_TOKEN_TIMEOUT_MS` | `30000` | Timeout for OAuth token requests |
 
 ## Development

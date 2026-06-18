@@ -1,0 +1,27 @@
+services:
+  open-grok-build:
+    build: .
+    image: open-grok-build:local
+    restart: unless-stopped
+    ports:
+      - "${GROK_BUILD_API_PORT:-8990}:${GROK_BUILD_API_PORT:-8990}"
+    environment:
+      GROK_BUILD_API_HOST: 0.0.0.0
+      GROK_BUILD_API_PORT: ${GROK_BUILD_API_PORT:-8990}
+      GROK_BUILD_OAUTH_TOKEN: ${GROK_BUILD_OAUTH_TOKEN:-}
+      GROK_BUILD_ACCESS_TOKEN: ${GROK_BUILD_ACCESS_TOKEN:-}
+      GROK_BUILD_API_KEY: ${GROK_BUILD_API_KEY:-}
+      GROK_BUILD_BASE_URL: ${GROK_BUILD_BASE_URL:-https://cli-chat-proxy.grok.com/v1}
+      GROK_BUILD_MODELS: ${GROK_BUILD_MODELS:-}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "--eval",
+          "fetch('http://127.0.0.1:' + (process.env.GROK_BUILD_API_PORT || '8990') + '/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
