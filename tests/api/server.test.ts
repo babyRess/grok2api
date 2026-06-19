@@ -346,6 +346,7 @@ describe('Anthropic API handler', () => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer upstream-token');
       expect(new Headers(init?.headers).get('x-grok-client-identifier')).toBe('grok-pager');
       expect(new Headers(init?.headers).get('x-grok-model-override')).toBe('grok-build');
+      expect(new Headers(init?.headers).get('x-grok-conv-id')).toBe('session-a');
       expect(JSON.parse(String(init?.body))).toMatchObject({
         model: 'grok-build',
         max_output_tokens: 12,
@@ -394,6 +395,62 @@ describe('Anthropic API handler', () => {
       stop_reason: 'end_turn',
       usage: { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: 3 },
     });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('disables upstream storage and conversation affinity for image requests', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).get('x-grok-conv-id')).toBeNull();
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        model: 'grok-composer-2.5-fast',
+        store: false,
+        input: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'What is this?' },
+              { type: 'input_image', image_url: 'data:image/png;base64,aW1n', detail: 'auto' },
+            ],
+          },
+        ],
+      });
+      expect(body.prompt_cache_key).toBeUndefined();
+      return Response.json({
+        id: 'resp_image',
+        model: 'grok-composer-2.5-fast',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'An image.' }] }],
+        usage: { input_tokens: 10, output_tokens: 3 },
+      });
+    });
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest(
+        '/v1/messages',
+        {
+          model: 'grok-composer-2.5-fast',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'What is this?' },
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/png', data: 'aW1n' },
+                },
+              ],
+            },
+          ],
+        },
+        { 'x-session-id': 'session-image' },
+      ),
+      {
+        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

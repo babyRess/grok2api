@@ -25,7 +25,10 @@ describe('OpenGrokBuildPlugin', () => {
     const providerCfg = grokBuildProviderConfig();
     expect(providerCfg.api).toBe('https://cli-chat-proxy.grok.com/v1');
     expect(Object.keys(providerCfg.models)).toContain('grok-build');
-    expect(providerCfg.models['grok-composer-2.5-fast'].modalities.input).toEqual(['text']);
+    expect(providerCfg.models['grok-composer-2.5-fast'].modalities.input).toEqual([
+      'text',
+      'image',
+    ]);
     expect(providerCfg.models['grok-build'].modalities.input).toEqual(['text', 'image']);
 
     expect(hooks.tool).toBeUndefined();

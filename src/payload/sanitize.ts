@@ -8,6 +8,7 @@
  *   - `function_call_output.output` cannot contain image arrays.
  *   - `image_url` parts must be normalized to `input_image` with data URIs.
  *   - Local image paths must be resolved to base64 data URIs.
+ *   - Image requests must avoid server-side response storage/session cache.
  *   - xAI rejects `role: "developer"` and `role: "system"` in the input
  *     array; these must be moved to top-level `instructions`.
  *   - xAI uses `text.format` instead of OpenAI's `response_format`.
@@ -126,6 +127,13 @@ function isInputImagePart(value: unknown): value is Record<string, unknown> {
     typeof value === 'object' &&
     (value as Record<string, unknown>).type === 'input_image'
   );
+}
+
+export function payloadHasInputImage(value: unknown): boolean {
+  if (isInputImagePart(value)) return true;
+  if (Array.isArray(value)) return value.some(payloadHasInputImage);
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value).some(payloadHasInputImage);
 }
 
 function getImageUrlAndDetail(obj: Record<string, unknown>): {
@@ -311,8 +319,14 @@ export function sanitizePayload(
 
   delete next.prompt_cache_retention;
 
+  const hasInputImage = payloadHasInputImage(next.input);
+  if (hasInputImage) {
+    next.store = false;
+    delete next.prompt_cache_key;
+  }
+
   // Add prompt_cache_key for conversation caching (routes to same server).
-  if (sessionId && !next.prompt_cache_key) {
+  if (sessionId && !next.prompt_cache_key && !hasInputImage) {
     next.prompt_cache_key = sessionId;
   }
 

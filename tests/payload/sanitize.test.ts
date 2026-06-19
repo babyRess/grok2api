@@ -110,10 +110,12 @@ describe('payload sanitization', () => {
         ],
       },
       'grok-composer-2.5-fast',
-      undefined,
+      'session-with-image',
       process.cwd(),
     );
 
+    expect(payload.store).toBe(false);
+    expect(payload.prompt_cache_key).toBeUndefined();
     expect(payload.input).toEqual([
       {
         role: 'user',

@@ -38,7 +38,7 @@ const FALLBACK_MODELS: GrokBuildModelConfig[] = [
     id: 'grok-composer-2.5-fast',
     name: 'Composer 2.5 Fast (Grok Build)',
     reasoning: false,
-    input: ['text'],
+    input: ['text', 'image'],
     cost: COST_COMPOSER_FAST,
     contextWindow: 200_000,
     maxTokens: 30_000,

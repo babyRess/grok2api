@@ -3,6 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { platform } from 'node:os';
 import { beginGrokBuildOAuth } from '../auth/oauth.js';
+import { payloadHasInputImage } from '../payload/sanitize.js';
 import {
   accountFromOAuthCredentials,
   accountGroupFromHeaders,
@@ -571,7 +572,11 @@ async function fetchUpstreamResponses(
     }
     if (!token) continue;
 
-    const headers = grokResponsesHeaders(token, model, sessionIdFromHeaders(request.headers));
+    const headers = grokResponsesHeaders(
+      token,
+      model,
+      payloadHasInputImage(payload) ? undefined : sessionIdFromHeaders(request.headers),
+    );
     if (payload.stream === true) headers.set('accept', 'text/event-stream');
 
     const response = await (options.fetch ?? fetch)(upstreamResponsesUrl(), {

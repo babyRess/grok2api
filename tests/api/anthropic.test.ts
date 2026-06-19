@@ -81,9 +81,10 @@ describe('Anthropic adapter', () => {
       stream: false,
       metadata: { user_id: 'local-test' },
       tool_choice: { type: 'function', name: 'lookup' },
-      prompt_cache_key: 'session-123',
+      store: false,
       reasoning: { effort: 'medium' },
     });
+    expect(payload.prompt_cache_key).toBeUndefined();
     expect(payload.instructions).toEqual(
       expect.stringContaining('only call tools included in this request: lookup'),
     );
