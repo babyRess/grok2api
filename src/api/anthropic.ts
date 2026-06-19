@@ -21,7 +21,15 @@ export type AnthropicAdapterOptions = {
   cwd?: string;
 };
 
-export type OpenAIChatCompletionOptions = {
+export type ToolUseConversionOptions = {
+  allowedToolNames?: Iterable<string>;
+};
+
+type ResolvedToolUseConversionOptions = {
+  allowedToolNames?: ReadonlySet<string>;
+};
+
+export type OpenAIChatCompletionOptions = ToolUseConversionOptions & {
   created?: number;
 };
 
@@ -47,6 +55,37 @@ function optionalString(value: unknown): string | undefined {
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function resolvedToolUseOptions(
+  options: ToolUseConversionOptions = {},
+): ResolvedToolUseConversionOptions {
+  return options.allowedToolNames ? { allowedToolNames: new Set(options.allowedToolNames) } : {};
+}
+
+function toolNameAllowed(name: string, options: ResolvedToolUseConversionOptions) {
+  return options.allowedToolNames === undefined || options.allowedToolNames.has(name);
+}
+
+function anthropicToolNames(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((tool): string[] =>
+    isRecord(tool) && typeof tool.name === 'string' ? [tool.name] : [],
+  );
+}
+
+export function anthropicToolNamesFromRequest(body: unknown) {
+  return new Set(isRecord(body) ? anthropicToolNames(body.tools) : []);
+}
+
+export function openAIToolNamesFromRequest(body: unknown) {
+  if (!isRecord(body) || !Array.isArray(body.tools)) return new Set<string>();
+  return new Set(
+    body.tools.flatMap((tool): string[] => {
+      if (!isRecord(tool) || tool.type !== 'function' || !isRecord(tool.function)) return [];
+      return typeof tool.function.name === 'string' ? [tool.function.name] : [];
+    }),
+  );
 }
 
 function parseJsonRecord(value: string): JsonRecord {
@@ -423,6 +462,29 @@ function responsesTools(value: unknown): JsonRecord[] | undefined {
   return tools.length > 0 ? tools : undefined;
 }
 
+function toolCompatibilityInstructions(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const names = anthropicToolNames(value);
+  if (names.length === 0) {
+    return 'Tool compatibility: no tools are available in this request. Do not call tools.';
+  }
+
+  return [
+    `Tool compatibility: only call tools included in this request: ${names.join(', ')}.`,
+    'Do not invent or call unavailable tool names. Names are case-sensitive.',
+    ...(names.includes('Bash') && !names.includes('Glob')
+      ? ['For file discovery or globbing, call Bash with find, fd, or grep commands.']
+      : []),
+    ...(names.includes('web_search') && !names.includes('WebSearch')
+      ? ['For web search, call web_search exactly; do not call WebSearch.']
+      : []),
+    ...(!names.includes('web_search') && !names.includes('WebSearch')
+      ? ['If no web search tool is listed, explain that web search is unavailable in this session.']
+      : []),
+  ].join('\n');
+}
+
 function responsesToolChoice(value: unknown): unknown {
   if (typeof value === 'string') {
     if (value === 'any') return 'required';
@@ -470,7 +532,12 @@ export function anthropicMessagesToResponsesPayload(
     input: responsesInputFromMessages(body.messages),
   };
 
-  const instructions = instructionsFromSystem(body.system);
+  const instructions = [
+    instructionsFromSystem(body.system),
+    toolCompatibilityInstructions(body.tools),
+  ]
+    .filter((part): part is string => !!part)
+    .join('\n\n');
   if (instructions) payload.instructions = instructions;
   if (optionalNumber(body.max_tokens) !== undefined) payload.max_output_tokens = body.max_tokens;
   if (optionalNumber(body.temperature) !== undefined) payload.temperature = body.temperature;
@@ -548,7 +615,30 @@ function parsedToolInput(value: unknown): JsonRecord {
   return parseJsonRecord(value);
 }
 
-function contentFromOutputItem(item: unknown): JsonRecord[] {
+function unavailableToolUseText(name: string, options: ResolvedToolUseConversionOptions) {
+  const available = options.allowedToolNames ? [...options.allowedToolNames] : [];
+  const availableText =
+    options.allowedToolNames === undefined
+      ? 'tools declared by the client'
+      : available.length > 0
+        ? available.join(', ')
+        : 'none';
+  const normalized = name.toLowerCase();
+  const hint =
+    ['glob', 'grep', 'ls', 'read'].includes(normalized) && available.includes('Bash')
+      ? ' Use Bash with find, fd, or grep instead.'
+      : ['websearch', 'web_search'].includes(normalized)
+        ? available.includes('web_search')
+          ? ' Use web_search exactly.'
+          : ' Web search is not available in this session.'
+        : '';
+  return `Skipped unavailable tool "${name}". Available tools: ${availableText}.${hint}`;
+}
+
+function contentFromOutputItem(
+  item: unknown,
+  options: ResolvedToolUseConversionOptions = {},
+): JsonRecord[] {
   if (!isRecord(item)) return [];
 
   if (item.type === 'message' && Array.isArray(item.content)) {
@@ -559,11 +649,16 @@ function contentFromOutputItem(item: unknown): JsonRecord[] {
   }
 
   if (item.type === 'function_call') {
+    const name = optionalString(item.name) ?? 'tool';
+    if (!toolNameAllowed(name, options)) {
+      return [{ type: 'text', text: unavailableToolUseText(name, options) }];
+    }
+
     return [
       {
         type: 'tool_use',
         id: optionalString(item.call_id) ?? optionalString(item.id) ?? 'tool_use_unknown',
-        name: optionalString(item.name) ?? 'tool',
+        name,
         input: parsedToolInput(item.arguments),
       },
     ];
@@ -659,7 +754,7 @@ export function responsesJsonToOpenAIChatCompletion(
   requestedModel?: string,
   options: OpenAIChatCompletionOptions = {},
 ) {
-  const message = responsesJsonToAnthropicMessage(value, requestedModel);
+  const message = responsesJsonToAnthropicMessage(value, requestedModel, options);
   return {
     id: message.id,
     object: 'chat.completion',
@@ -690,10 +785,15 @@ function stopReasonFromResponses(response: JsonRecord, hasToolUse: boolean) {
   return 'end_turn';
 }
 
-export function responsesJsonToAnthropicMessage(value: unknown, requestedModel?: string) {
+export function responsesJsonToAnthropicMessage(
+  value: unknown,
+  requestedModel?: string,
+  options: ToolUseConversionOptions = {},
+) {
   const response = isRecord(value) ? value : {};
+  const conversionOptions = resolvedToolUseOptions(options);
   const content = Array.isArray(response.output)
-    ? response.output.flatMap(contentFromOutputItem)
+    ? response.output.flatMap((item) => contentFromOutputItem(item, conversionOptions))
     : [];
 
   if (content.length === 0 && typeof response.output_text === 'string') {
@@ -796,7 +896,9 @@ async function* upstreamSseEvents(body: ReadableStream<Uint8Array>) {
 }
 
 type StreamState = {
+  blockedToolBlocks: Set<string>;
   contentIndex: number;
+  conversionOptions: ResolvedToolUseConversionOptions;
   messageId: string;
   messageStarted: boolean;
   messageStopped: boolean;
@@ -865,10 +967,26 @@ function startToolBlock(
   key: string,
   item?: JsonRecord,
 ) {
-  ensureMessageStart(controller, state);
+  if (state.blockedToolBlocks.has(key)) return undefined;
+
   const existing = state.toolBlocks.get(key);
   if (existing && state.openBlocks.has(existing.index)) return existing;
 
+  const name = optionalString(item?.name) ?? 'tool';
+  if (!toolNameAllowed(name, state.conversionOptions)) {
+    state.blockedToolBlocks.add(key);
+    enqueueEvent(controller, 'content_block_delta', {
+      type: 'content_block_delta',
+      index: startTextBlock(controller, state),
+      delta: {
+        type: 'text_delta',
+        text: unavailableToolUseText(name, state.conversionOptions),
+      },
+    });
+    return undefined;
+  }
+
+  ensureMessageStart(controller, state);
   const index = state.contentIndex;
   state.contentIndex += 1;
   const block = { index, argumentsEmitted: false };
@@ -884,7 +1002,7 @@ function startToolBlock(
         optionalString(item?.id) ??
         optionalString(item?.item_id) ??
         key,
-      name: optionalString(item?.name) ?? 'tool',
+      name,
       input: {},
     },
   });
@@ -930,7 +1048,7 @@ function emitFinalContentFromCompleted(
   response: JsonRecord,
 ) {
   if (state.contentIndex > 0) return;
-  const message = responsesJsonToAnthropicMessage(response, state.model);
+  const message = responsesJsonToAnthropicMessage(response, state.model, state.conversionOptions);
 
   for (const block of message.content) {
     ensureMessageStart(controller, state);
@@ -985,7 +1103,7 @@ function completeMessage(
 
   for (const index of [...state.openBlocks]) stopBlock(controller, state, index);
 
-  const message = responsesJsonToAnthropicMessage(response, state.model);
+  const message = responsesJsonToAnthropicMessage(response, state.model, state.conversionOptions);
   enqueueEvent(controller, 'message_delta', {
     type: 'message_delta',
     delta: {
@@ -1046,6 +1164,7 @@ function handleStreamEvent(
   if (type === 'response.function_call_arguments.delta') {
     const key = streamToolKey(event);
     const block = startToolBlock(controller, state, key, event);
+    if (!block) return;
     block.argumentsEmitted = true;
     enqueueEvent(controller, 'content_block_delta', {
       type: 'content_block_delta',
@@ -1061,6 +1180,7 @@ function handleStreamEvent(
   if (type === 'response.output_item.done' && isRecord(event.item)) {
     if (event.item.type !== 'function_call') return;
     const block = startToolBlock(controller, state, streamToolKey(event.item), event.item);
+    if (!block) return;
     if (!block.argumentsEmitted && typeof event.item.arguments === 'string') {
       enqueueEvent(controller, 'content_block_delta', {
         type: 'content_block_delta',
@@ -1093,11 +1213,17 @@ function handleStreamEvent(
   }
 }
 
-export function responsesStreamToAnthropicSse(body: ReadableStream<Uint8Array>, model: string) {
+export function responsesStreamToAnthropicSse(
+  body: ReadableStream<Uint8Array>,
+  model: string,
+  options: ToolUseConversionOptions = {},
+) {
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const state: StreamState = {
+        blockedToolBlocks: new Set(),
         contentIndex: 0,
+        conversionOptions: resolvedToolUseOptions(options),
         messageId: `msg_${crypto.randomUUID()}`,
         messageStarted: false,
         messageStopped: false,
@@ -1132,6 +1258,7 @@ export function responsesStreamToAnthropicSse(body: ReadableStream<Uint8Array>, 
 export function responsesStreamToOpenAIChatCompletionsSse(
   body: ReadableStream<Uint8Array>,
   model: string,
+  options: ToolUseConversionOptions = {},
 ) {
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -1139,6 +1266,8 @@ export function responsesStreamToOpenAIChatCompletionsSse(
       let id = `chatcmpl_${crypto.randomUUID()}`;
       let responseModel = model;
       let roleSent = false;
+      const blockedToolCalls = new Set<string>();
+      const conversionOptions = resolvedToolUseOptions(options);
       const toolIndexes = new Map<string, number>();
 
       const enqueue = (chunk: JsonRecord | '[DONE]') => {
@@ -1176,6 +1305,17 @@ export function responsesStreamToOpenAIChatCompletionsSse(
           if (type === 'response.output_item.added' && isRecord(event.item)) {
             if (event.item.type !== 'function_call') continue;
             const key = streamToolKey(event.item);
+            const name = optionalString(event.item.name) ?? 'tool';
+            if (!toolNameAllowed(name, conversionOptions)) {
+              blockedToolCalls.add(key);
+              enqueue(
+                openAIChatCompletionChunk(id, responseModel, {
+                  content: unavailableToolUseText(name, conversionOptions),
+                }),
+              );
+              continue;
+            }
+
             const index = toolIndexes.size;
             toolIndexes.set(key, index);
             enqueue(
@@ -1186,7 +1326,7 @@ export function responsesStreamToOpenAIChatCompletionsSse(
                     id: optionalString(event.item.call_id) ?? optionalString(event.item.id) ?? key,
                     type: 'function',
                     function: {
-                      name: optionalString(event.item.name) ?? 'tool',
+                      name,
                       arguments: '',
                     },
                   },
@@ -1198,6 +1338,7 @@ export function responsesStreamToOpenAIChatCompletionsSse(
 
           if (type === 'response.function_call_arguments.delta') {
             const key = streamToolKey(event);
+            if (blockedToolCalls.has(key)) continue;
             const index = toolIndexes.get(key) ?? toolIndexes.size;
             if (!toolIndexes.has(key)) toolIndexes.set(key, index);
             enqueue(
@@ -1217,6 +1358,7 @@ export function responsesStreamToOpenAIChatCompletionsSse(
             const message = responsesJsonToAnthropicMessage(
               responseRecordFromEvent(event),
               responseModel,
+              conversionOptions,
             );
             enqueue(
               openAIChatCompletionChunk(

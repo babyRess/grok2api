@@ -74,7 +74,7 @@ describe('Anthropic adapter', () => {
     expect(payload).toMatchObject({
       model: 'grok-4.3',
       max_output_tokens: 123,
-      instructions: 'You are concise.',
+      instructions: expect.stringContaining('You are concise.'),
       temperature: 0.2,
       top_p: 0.9,
       stop: ['STOP'],
@@ -84,6 +84,9 @@ describe('Anthropic adapter', () => {
       prompt_cache_key: 'session-123',
       reasoning: { effort: 'medium' },
     });
+    expect(payload.instructions).toEqual(
+      expect.stringContaining('only call tools included in this request: lookup'),
+    );
     expect(payload.tools).toEqual([
       {
         type: 'function',
@@ -204,5 +207,33 @@ describe('Anthropic adapter', () => {
         cache_creation_input_tokens: 2,
       },
     });
+  });
+
+  it('converts unavailable Responses tool calls to text', () => {
+    const message = responsesJsonToAnthropicMessage(
+      {
+        id: 'resp_1',
+        model: 'grok-build',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_2',
+            name: 'Glob',
+            arguments: '{"pattern":"**/*.ts"}',
+          },
+        ],
+      },
+      'grok-build',
+      { allowedToolNames: ['Bash'] },
+    );
+
+    expect(message.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('Skipped unavailable tool "Glob"'),
+      },
+    ]);
+    expect(message.content).not.toContainEqual(expect.objectContaining({ type: 'tool_use' }));
+    expect(message.stop_reason).toBe('end_turn');
   });
 });

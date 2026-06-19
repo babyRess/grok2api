@@ -24,15 +24,18 @@ import {
   anthropicErrorResponse,
   anthropicMessagesToResponsesPayload,
   anthropicModelsPayload,
+  anthropicToolNamesFromRequest,
   clientAuthError,
   countAnthropicTokens,
   grokResponsesHeaders,
   openAIChatCompletionToAnthropicMessages,
+  openAIToolNamesFromRequest,
   responsesJsonToAnthropicMessage,
   responsesJsonToOpenAIChatCompletion,
   responsesStreamToAnthropicSse,
   responsesStreamToOpenAIChatCompletionsSse,
   sessionIdFromHeaders,
+  type ToolUseConversionOptions,
   upstreamResponsesUrl,
 } from './anthropic.js';
 
@@ -603,17 +606,24 @@ async function responseFromUpstream(
   options: AnthropicApiHandlerOptions,
   payload: Record<string, unknown>,
   pool: GrokAccountPool,
-  stream: (body: ReadableStream<Uint8Array>, model: string) => ReadableStream<Uint8Array>,
-  json: (body: unknown, model: string) => unknown,
+  conversionOptions: ToolUseConversionOptions,
+  stream: (
+    body: ReadableStream<Uint8Array>,
+    model: string,
+    options: ToolUseConversionOptions,
+  ) => ReadableStream<Uint8Array>,
+  json: (body: unknown, model: string, options: ToolUseConversionOptions) => unknown,
 ) {
   const { model, response } = await fetchUpstreamResponses(request, options, payload, pool);
 
   if (!response.ok) return upstreamErrorResponse(response);
-  if (payload.stream !== true) return Response.json(json(await response.json(), model));
+  if (payload.stream !== true) {
+    return Response.json(json(await response.json(), model, conversionOptions));
+  }
   if (!response.body) {
     return anthropicErrorResponse(502, 'Upstream Grok Build stream response had no body.');
   }
-  return eventStreamResponse(stream(response.body, model));
+  return eventStreamResponse(stream(response.body, model, conversionOptions));
 }
 
 async function handleMessages(request: Request, options: AnthropicApiHandlerOptions) {
@@ -627,6 +637,7 @@ async function handleMessages(request: Request, options: AnthropicApiHandlerOpti
   }
 
   const body = await requestJson(request);
+  const conversionOptions = { allowedToolNames: anthropicToolNamesFromRequest(body) };
   const payload = anthropicMessagesToResponsesPayload(body, request.headers, {
     cwd: options.cwd,
   });
@@ -635,6 +646,7 @@ async function handleMessages(request: Request, options: AnthropicApiHandlerOpti
     options,
     payload,
     pool,
+    conversionOptions,
     responsesStreamToAnthropicSse,
     responsesJsonToAnthropicMessage,
   );
@@ -650,8 +662,10 @@ async function handleChatCompletions(request: Request, options: AnthropicApiHand
     );
   }
 
+  const body = await requestJson(request);
+  const conversionOptions = { allowedToolNames: openAIToolNamesFromRequest(body) };
   const payload = anthropicMessagesToResponsesPayload(
-    openAIChatCompletionToAnthropicMessages(await requestJson(request)),
+    openAIChatCompletionToAnthropicMessages(body),
     request.headers,
     { cwd: options.cwd },
   );
@@ -660,6 +674,7 @@ async function handleChatCompletions(request: Request, options: AnthropicApiHand
     options,
     payload,
     pool,
+    conversionOptions,
     responsesStreamToOpenAIChatCompletionsSse,
     responsesJsonToOpenAIChatCompletion,
   );
