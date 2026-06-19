@@ -1,4 +1,8 @@
-import { type AnthropicApiEnvironment, AnthropicApiError } from './anthropic.js';
+import {
+  type AnthropicApiEnvironment,
+  AnthropicApiError,
+  anthropicMessagesToResponsesPayload,
+} from './anthropic.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -12,6 +16,10 @@ type WebSearchResult = {
 export type WebSearchHandlerOptions = {
   env?: AnthropicApiEnvironment;
   fetch?: typeof fetch;
+  inputTokens?: number;
+};
+
+export type NativeWebSearchResponseOptions = {
   inputTokens?: number;
 };
 
@@ -38,6 +46,36 @@ function isWebSearchTool(tool: unknown) {
   const name = optionalString(tool.name);
   const type = optionalString(tool.type);
   return name === 'web_search' || name === 'WebSearch' || !!type?.startsWith('web_search');
+}
+
+function webSearchTool(body: unknown): JsonRecord {
+  const source =
+    isRecord(body) && Array.isArray(body.tools) && isRecord(body.tools[0]) ? body.tools[0] : {};
+  const allowedDomains = Array.isArray(source.allowed_domains)
+    ? source.allowed_domains.filter((domain): domain is string => typeof domain === 'string')
+    : [];
+  const excludedDomains = Array.isArray(source.excluded_domains)
+    ? source.excluded_domains.filter((domain): domain is string => typeof domain === 'string')
+    : [];
+  const filters =
+    isRecord(source.filters) || allowedDomains.length > 0 || excludedDomains.length > 0
+      ? {
+          ...(isRecord(source.filters) ? source.filters : {}),
+          ...(allowedDomains.length > 0 ? { allowed_domains: allowedDomains } : {}),
+          ...(excludedDomains.length > 0 ? { excluded_domains: excludedDomains } : {}),
+        }
+      : undefined;
+
+  return {
+    type: 'web_search',
+    ...(filters ? { filters } : {}),
+    ...(typeof source.enable_image_understanding === 'boolean'
+      ? { enable_image_understanding: source.enable_image_understanding }
+      : {}),
+    ...(typeof source.enable_image_search === 'boolean'
+      ? { enable_image_search: source.enable_image_search }
+      : {}),
+  };
 }
 
 export function isWebSearchOnlyRequest(body: unknown) {
@@ -72,6 +110,47 @@ export function extractWebSearchQuery(body: unknown) {
 
   const prefix = 'Perform a web search for the query: ';
   return text.startsWith(prefix) ? text.slice(prefix.length).trim() || undefined : text;
+}
+
+function webSearchRequest(body: unknown) {
+  if (!isRecord(body)) {
+    throw new AnthropicApiError(400, 'invalid_request_error', 'Request body must be an object.');
+  }
+
+  const query = extractWebSearchQuery(body);
+  if (!query) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      'Could not extract a web_search query from the request messages.',
+    );
+  }
+
+  return { body, query };
+}
+
+export function nativeWebSearchResponsesPayload(
+  body: unknown,
+  headers = new Headers(),
+  cwd = process.cwd(),
+) {
+  if (!isRecord(body)) {
+    throw new AnthropicApiError(400, 'invalid_request_error', 'Request body must be an object.');
+  }
+
+  const payload = anthropicMessagesToResponsesPayload(
+    {
+      ...body,
+      stream: false,
+      tool_choice: undefined,
+      tools: undefined,
+    },
+    headers,
+    { cwd },
+  );
+  payload.tools = [webSearchTool(body)];
+  payload.stream = false;
+  return payload;
 }
 
 function resultFromRecord(value: unknown): WebSearchResult | undefined {
@@ -312,7 +391,12 @@ function enqueueEvent(
   controller.enqueue(new TextEncoder().encode(sse(event, data)));
 }
 
-function contentBlocksForSearch(query: string, toolUseId: string, results: WebSearchResult[]) {
+function contentBlocksForSearch(
+  query: string,
+  toolUseId: string,
+  results: WebSearchResult[],
+  answerText = searchSummary(query, results),
+) {
   return [
     { type: 'text', text: `I'll search for "${query}".` },
     {
@@ -325,7 +409,7 @@ function contentBlocksForSearch(query: string, toolUseId: string, results: WebSe
       type: 'web_search_tool_result',
       content: searchToolResultContent(results),
     },
-    { type: 'text', text: searchSummary(query, results) },
+    { type: 'text', text: answerText },
   ];
 }
 
@@ -346,18 +430,19 @@ function webSearchJsonMessage(
   query: string,
   results: WebSearchResult[],
   inputTokens: number,
+  answerText = searchSummary(query, results),
+  usage = messageUsage(inputTokens, answerText),
 ) {
   const toolUseId = randomId('srvtoolu', 32);
-  const summary = searchSummary(query, results);
   return {
     id: randomId('msg', 24),
     type: 'message',
     role: 'assistant',
     model: optionalString(body.model) ?? '',
-    content: contentBlocksForSearch(query, toolUseId, results),
+    content: contentBlocksForSearch(query, toolUseId, results, answerText),
     stop_reason: 'end_turn',
     stop_sequence: null,
-    usage: messageUsage(inputTokens, summary),
+    usage,
   };
 }
 
@@ -366,13 +451,14 @@ function webSearchSseStream(
   query: string,
   results: WebSearchResult[],
   inputTokens: number,
+  answerText = searchSummary(query, results),
+  usage = messageUsage(inputTokens, answerText),
 ) {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       const model = optionalString(body.model) ?? '';
       const messageId = randomId('msg', 24);
       const toolUseId = randomId('srvtoolu', 32);
-      const summary = searchSummary(query, results);
 
       enqueueEvent(controller, 'message_start', {
         type: 'message_start',
@@ -428,7 +514,7 @@ function webSearchSseStream(
         index: 3,
         content_block: { type: 'text', text: '' },
       });
-      for (const text of chunkText(summary)) {
+      for (const text of chunkText(answerText)) {
         enqueueEvent(controller, 'content_block_delta', {
           type: 'content_block_delta',
           index: 3,
@@ -439,7 +525,7 @@ function webSearchSseStream(
       enqueueEvent(controller, 'message_delta', {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },
-        usage: messageUsage(inputTokens, summary),
+        usage,
       });
       enqueueEvent(controller, 'message_stop', { type: 'message_stop' });
       controller.close();
@@ -447,34 +533,128 @@ function webSearchSseStream(
   });
 }
 
+function webSearchSseResponse(
+  body: JsonRecord,
+  query: string,
+  results: WebSearchResult[],
+  inputTokens: number,
+  answerText = searchSummary(query, results),
+  usage = messageUsage(inputTokens, answerText),
+) {
+  return new Response(webSearchSseStream(body, query, results, inputTokens, answerText, usage), {
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+function outputTextFromGrok(value: unknown) {
+  if (!isRecord(value)) return '';
+  if (typeof value.output_text === 'string') return value.output_text;
+  if (!Array.isArray(value.output)) return '';
+
+  return value.output
+    .flatMap((item): string[] => {
+      if (!isRecord(item) || item.type !== 'message' || !Array.isArray(item.content)) return [];
+      return item.content.flatMap((part): string[] =>
+        isRecord(part) && typeof part.text === 'string' ? [part.text] : [],
+      );
+    })
+    .join('');
+}
+
+function citationResult(value: unknown): WebSearchResult | undefined {
+  if (typeof value === 'string') return { title: value, url: value };
+  if (!isRecord(value)) return undefined;
+  const url = optionalString(value.url) ?? optionalString(value.uri);
+  if (!url) return undefined;
+  return {
+    title: optionalString(value.title) ?? url,
+    url,
+    ...(optionalString(value.snippet) ? { snippet: optionalString(value.snippet) } : {}),
+  };
+}
+
+function annotationResults(value: unknown) {
+  if (!isRecord(value) || !Array.isArray(value.output)) return [];
+
+  return value.output.flatMap((item): WebSearchResult[] => {
+    if (!isRecord(item) || item.type !== 'message' || !Array.isArray(item.content)) return [];
+    return item.content.flatMap((part): WebSearchResult[] => {
+      if (!isRecord(part) || !Array.isArray(part.annotations)) return [];
+      return part.annotations
+        .map(citationResult)
+        .filter((result): result is WebSearchResult => !!result);
+    });
+  });
+}
+
+function grokCitationResults(value: unknown) {
+  if (!isRecord(value)) return [];
+  return uniqueResults(
+    [
+      ...(Array.isArray(value.citations)
+        ? value.citations
+            .map(citationResult)
+            .filter((result): result is WebSearchResult => !!result)
+        : []),
+      ...annotationResults(value),
+    ],
+    10,
+  );
+}
+
+function grokUsage(value: unknown, inputTokens: number, answerText: string) {
+  const usage = isRecord(value) && isRecord(value.usage) ? value.usage : {};
+  return {
+    input_tokens:
+      optionalNumber(usage.input_tokens) ?? optionalNumber(usage.prompt_tokens) ?? inputTokens,
+    output_tokens:
+      optionalNumber(usage.output_tokens) ??
+      optionalNumber(usage.completion_tokens) ??
+      estimateTokens(answerText),
+    server_tool_use: { web_search_requests: 1 },
+  };
+}
+
+export function webSearchAnthropicResponseFromGrok(
+  body: unknown,
+  grokResponse: unknown,
+  options: NativeWebSearchResponseOptions = {},
+) {
+  const request = webSearchRequest(body);
+  const results = grokCitationResults(grokResponse);
+  const answerText = outputTextFromGrok(grokResponse) || searchSummary(request.query, results);
+  const inputTokens = options.inputTokens ?? estimateTokens(request.query);
+  const usage = grokUsage(grokResponse, inputTokens, answerText);
+  if (request.body.stream === true) {
+    return webSearchSseResponse(
+      request.body,
+      request.query,
+      results,
+      inputTokens,
+      answerText,
+      usage,
+    );
+  }
+
+  return Response.json(
+    webSearchJsonMessage(request.body, request.query, results, inputTokens, answerText, usage),
+  );
+}
+
 export async function webSearchAnthropicResponse(
   body: unknown,
   options: WebSearchHandlerOptions = {},
 ) {
-  if (!isRecord(body)) {
-    throw new AnthropicApiError(400, 'invalid_request_error', 'Request body must be an object.');
+  const request = webSearchRequest(body);
+  const results = await searchWeb(request.query, options);
+  const inputTokens = options.inputTokens ?? estimateTokens(request.query);
+  if (request.body.stream === true) {
+    return webSearchSseResponse(request.body, request.query, results, inputTokens);
   }
 
-  const query = extractWebSearchQuery(body);
-  if (!query) {
-    throw new AnthropicApiError(
-      400,
-      'invalid_request_error',
-      'Could not extract a web_search query from the request messages.',
-    );
-  }
-
-  const results = await searchWeb(query, options);
-  const inputTokens = options.inputTokens ?? estimateTokens(query);
-  if (body.stream === true) {
-    return new Response(webSearchSseStream(body, query, results, inputTokens), {
-      headers: {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive',
-      },
-    });
-  }
-
-  return Response.json(webSearchJsonMessage(body, query, results, inputTokens));
+  return Response.json(webSearchJsonMessage(request.body, request.query, results, inputTokens));
 }

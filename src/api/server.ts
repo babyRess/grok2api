@@ -38,7 +38,12 @@ import {
   type ToolUseConversionOptions,
   upstreamResponsesUrl,
 } from './anthropic.js';
-import { isWebSearchOnlyRequest, webSearchAnthropicResponse } from './websearch.js';
+import {
+  isWebSearchOnlyRequest,
+  nativeWebSearchResponsesPayload,
+  webSearchAnthropicResponse,
+  webSearchAnthropicResponseFromGrok,
+} from './websearch.js';
 
 export type AnthropicApiHandlerOptions = {
   cwd?: string;
@@ -627,14 +632,37 @@ async function responseFromUpstream(
   return eventStreamResponse(stream(response.body, model, conversionOptions));
 }
 
+async function handleWebSearchMessages(
+  request: Request,
+  options: AnthropicApiHandlerOptions,
+  body: unknown,
+) {
+  const env = options.env ?? process.env;
+  const inputTokens = countAnthropicTokens(body).input_tokens;
+  const pool = resolveAccountPool(env);
+
+  if (pool.accounts.length > 0 && env.GROK_BUILD_WEB_SEARCH_PROVIDER !== 'external') {
+    const payload = nativeWebSearchResponsesPayload(body, request.headers, options.cwd);
+    const { response } = await fetchUpstreamResponses(request, options, payload, pool);
+    if (response.ok) {
+      return webSearchAnthropicResponseFromGrok(body, await response.json(), { inputTokens });
+    }
+
+    if (env.GROK_BUILD_WEB_SEARCH_PROVIDER === 'grok') return upstreamErrorResponse(response);
+    await response.text();
+  }
+
+  return webSearchAnthropicResponse(body, {
+    env,
+    fetch: options.fetch,
+    inputTokens,
+  });
+}
+
 async function handleMessages(request: Request, options: AnthropicApiHandlerOptions) {
   const body = await requestJson(request);
   if (isWebSearchOnlyRequest(body)) {
-    return webSearchAnthropicResponse(body, {
-      env: options.env ?? process.env,
-      fetch: options.fetch,
-      inputTokens: countAnthropicTokens(body).input_tokens,
-    });
+    return handleWebSearchMessages(request, options, body);
   }
 
   const pool = resolveAccountPool(options.env ?? process.env);

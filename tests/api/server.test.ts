@@ -184,6 +184,88 @@ describe('Anthropic API handler', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('prefers native Grok web_search when an upstream token is configured', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(input).toBe('https://cli-chat-proxy.grok.com/v1/responses');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer upstream-token');
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        model: 'grok-build',
+        stream: false,
+        tools: [{ type: 'web_search' }],
+        input: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'Perform a web search for the query: xAI web search docs',
+              },
+            ],
+          },
+        ],
+      });
+      return Response.json({
+        id: 'resp_search',
+        model: 'grok-build',
+        output: [
+          {
+            type: 'message',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Grok supports native web search.[[1]](https://docs.x.ai/developers/tools/web-search)',
+                annotations: [
+                  {
+                    type: 'url_citation',
+                    title: 'xAI Web Search',
+                    url: 'https://docs.x.ai/developers/tools/web-search',
+                    start_index: 33,
+                    end_index: 93,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        citations: ['https://docs.x.ai/developers/tools/web-search'],
+        usage: { input_tokens: 11, output_tokens: 8 },
+      });
+    });
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/cc/v1/messages', {
+        model: 'grok-build',
+        stream: true,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Perform a web search for the query: xAI web search docs',
+              },
+            ],
+          },
+        ],
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      }),
+      {
+        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain('"type":"server_tool_use"');
+    expect(text).toContain('"type":"web_search_tool_result"');
+    expect(text).toContain('Grok supports native web search');
+    expect(text).toContain('https://docs.x.ai/developers/tools/web-search');
+    expect(text).toContain('"input_tokens":11');
+    expect(text).toContain('"output_tokens":8');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('serves WebSearch alias requests as non-streaming server search results', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({

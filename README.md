@@ -162,9 +162,11 @@ Claude Code can send Anthropic server-tool requests where the only tool is
 `server_tool_use` plus `web_search_tool_result` blocks instead of forwarding
 them as normal function tools.
 
-By default, WebSearch uses DuckDuckGo's instant-answer API with no API key. For
-better VPS reliability, configure either a custom JSON search endpoint or Brave
-Search:
+By default, WebSearch uses the configured Grok Build account first because xAI's
+Responses API supports native `web_search`. If no Grok account is configured, or
+native search fails in `auto` mode, it falls back to DuckDuckGo's instant-answer
+API with no API key. For better VPS reliability, configure either a custom JSON
+search endpoint or Brave Search:
 
 ```bash
 # Custom endpoint: POST JSON {"query":"...","count":5}; accepts results/items/web.results
@@ -176,6 +178,8 @@ export GROK_BUILD_BRAVE_SEARCH_API_KEY="brave-search-key"
 ```
 
 Limit results with `GROK_BUILD_WEB_SEARCH_MAX_RESULTS` (default `5`, max `10`).
+Set `GROK_BUILD_WEB_SEARCH_PROVIDER=grok` to require native Grok search, or
+`GROK_BUILD_WEB_SEARCH_PROVIDER=external` to skip Grok and use external search.
 
 ### Headless VPS Login
 
@@ -258,6 +262,7 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `GROK_BUILD_CALLBACK_PROTOCOL` | `http` | Public redirect protocol |
 | `GROK_BUILD_CALLBACK_URL` | none | Exact public OAuth redirect URL override |
 | `GROK_BUILD_TOKEN_TIMEOUT_MS` | `30000` | OAuth token request timeout |
+| `GROK_BUILD_WEB_SEARCH_PROVIDER` | `auto` | `auto`, `grok`, or `external` WebSearch provider mode |
 | `GROK_BUILD_WEB_SEARCH_ENDPOINT` | none | Optional custom WebSearch JSON endpoint |
 | `GROK_BUILD_WEB_SEARCH_API_KEY` | none | Optional API key for custom WebSearch endpoint |
 | `GROK_BUILD_WEB_SEARCH_AUTH_HEADER` | `authorization` | Header used for the custom WebSearch key |
