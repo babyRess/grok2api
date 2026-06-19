@@ -615,24 +615,71 @@ function parsedToolInput(value: unknown): JsonRecord {
   return parseJsonRecord(value);
 }
 
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function bashInputForUnavailableTool(name: string, input: JsonRecord) {
+  if (name.toLowerCase() !== 'glob') return undefined;
+
+  const pattern =
+    optionalString(input.pattern) ??
+    optionalString(input.glob) ??
+    optionalString(input.path) ??
+    '*';
+  const relativePattern = pattern.replace(/^\.?\//, '') || '*';
+  return {
+    command: [
+      'if command -v fd >/dev/null 2>&1; then',
+      `  fd --hidden --glob ${shellQuote(relativePattern)} .`,
+      'else',
+      `  find . -path ${shellQuote(`./${relativePattern}`)} -print`,
+      'fi',
+    ].join('\n'),
+  };
+}
+
+function translatedToolUseName(name: string, options: ResolvedToolUseConversionOptions) {
+  if (!options.allowedToolNames?.has('Bash')) return undefined;
+  return bashInputForUnavailableTool(name, {}) ? 'Bash' : undefined;
+}
+
+function toolUseBlockFromFunctionCall(
+  item: JsonRecord,
+  options: ResolvedToolUseConversionOptions = {},
+) {
+  const name = optionalString(item.name) ?? 'tool';
+  const input = parsedToolInput(item.arguments);
+  if (toolNameAllowed(name, options)) {
+    return {
+      type: 'tool_use',
+      id: optionalString(item.call_id) ?? optionalString(item.id) ?? 'tool_use_unknown',
+      name,
+      input,
+    };
+  }
+
+  const bashInput = options.allowedToolNames?.has('Bash')
+    ? bashInputForUnavailableTool(name, input)
+    : undefined;
+  if (!bashInput) return undefined;
+
+  return {
+    type: 'tool_use',
+    id: optionalString(item.call_id) ?? optionalString(item.id) ?? 'tool_use_unknown',
+    name: 'Bash',
+    input: bashInput,
+  };
+}
+
 function unavailableToolUseText(name: string, options: ResolvedToolUseConversionOptions) {
-  const available = options.allowedToolNames ? [...options.allowedToolNames] : [];
-  const availableText =
-    options.allowedToolNames === undefined
-      ? 'tools declared by the client'
-      : available.length > 0
-        ? available.join(', ')
-        : 'none';
   const normalized = name.toLowerCase();
-  const hint =
-    ['glob', 'grep', 'ls', 'read'].includes(normalized) && available.includes('Bash')
-      ? ' Use Bash with find, fd, or grep instead.'
-      : ['websearch', 'web_search'].includes(normalized)
-        ? available.includes('web_search')
-          ? ' Use web_search exactly.'
-          : ' Web search is not available in this session.'
-        : '';
-  return `Skipped unavailable tool "${name}". Available tools: ${availableText}.${hint}`;
+  if (['websearch', 'web_search'].includes(normalized)) {
+    return options.allowedToolNames?.has('web_search')
+      ? 'Web search must be requested with the web_search tool name.'
+      : 'Web search is not available in this session.';
+  }
+  return 'A requested tool is not available in this session.';
 }
 
 function contentFromOutputItem(
@@ -649,18 +696,10 @@ function contentFromOutputItem(
   }
 
   if (item.type === 'function_call') {
-    const name = optionalString(item.name) ?? 'tool';
-    if (!toolNameAllowed(name, options)) {
-      return [{ type: 'text', text: unavailableToolUseText(name, options) }];
-    }
-
+    const toolUse = toolUseBlockFromFunctionCall(item, options);
+    if (toolUse) return [toolUse];
     return [
-      {
-        type: 'tool_use',
-        id: optionalString(item.call_id) ?? optionalString(item.id) ?? 'tool_use_unknown',
-        name,
-        input: parsedToolInput(item.arguments),
-      },
+      { type: 'text', text: unavailableToolUseText(optionalString(item.name) ?? 'tool', options) },
     ];
   }
 
@@ -894,6 +933,13 @@ async function* upstreamSseEvents(body: ReadableStream<Uint8Array>) {
   }
 }
 
+type StreamToolBlock = {
+  index: number;
+  argumentsEmitted: boolean;
+  argumentDeltas: string[];
+  translatedFrom?: string;
+};
+
 type StreamState = {
   blockedToolBlocks: Set<string>;
   contentIndex: number;
@@ -904,7 +950,7 @@ type StreamState = {
   model: string;
   openBlocks: Set<number>;
   textBlockIndex?: number;
-  toolBlocks: Map<string, { index: number; argumentsEmitted: boolean }>;
+  toolBlocks: Map<string, StreamToolBlock>;
 };
 
 function enqueueEvent(
@@ -966,14 +1012,24 @@ function startToolBlock(
   key: string,
   item?: JsonRecord,
 ) {
-  if (state.blockedToolBlocks.has(key)) return undefined;
+  if (streamToolKeys(item ?? { id: key }).some((toolKey) => state.blockedToolBlocks.has(toolKey))) {
+    return undefined;
+  }
 
-  const existing = state.toolBlocks.get(key);
+  const existing =
+    streamToolKeys(item ?? { id: key })
+      .map((toolKey) => state.toolBlocks.get(toolKey))
+      .find((block): block is StreamToolBlock => !!block) ?? state.toolBlocks.get(key);
   if (existing && state.openBlocks.has(existing.index)) return existing;
 
   const name = optionalString(item?.name) ?? 'tool';
-  if (!toolNameAllowed(name, state.conversionOptions)) {
-    state.blockedToolBlocks.add(key);
+  const translatedName = toolNameAllowed(name, state.conversionOptions)
+    ? undefined
+    : translatedToolUseName(name, state.conversionOptions);
+  if (!toolNameAllowed(name, state.conversionOptions) && !translatedName) {
+    streamToolKeys(item ?? { id: key }).forEach((toolKey) => {
+      state.blockedToolBlocks.add(toolKey);
+    });
     enqueueEvent(controller, 'content_block_delta', {
       type: 'content_block_delta',
       index: startTextBlock(controller, state),
@@ -988,8 +1044,15 @@ function startToolBlock(
   ensureMessageStart(controller, state);
   const index = state.contentIndex;
   state.contentIndex += 1;
-  const block = { index, argumentsEmitted: false };
-  state.toolBlocks.set(key, block);
+  const block = {
+    index,
+    argumentsEmitted: false,
+    argumentDeltas: [],
+    ...(translatedName ? { translatedFrom: name } : {}),
+  };
+  streamToolKeys(item ?? { id: key }).forEach((toolKey) => {
+    state.toolBlocks.set(toolKey, block);
+  });
   state.openBlocks.add(index);
   enqueueEvent(controller, 'content_block_start', {
     type: 'content_block_start',
@@ -1001,11 +1064,21 @@ function startToolBlock(
         optionalString(item?.id) ??
         optionalString(item?.item_id) ??
         key,
-      name,
+      name: translatedName ?? name,
       input: {},
     },
   });
   return block;
+}
+
+function streamToolArguments(block: StreamToolBlock, item: JsonRecord) {
+  if (!block.translatedFrom) return optionalString(item.arguments) ?? '';
+  return JSON.stringify(
+    bashInputForUnavailableTool(
+      block.translatedFrom,
+      parsedToolInput(optionalString(item.arguments) ?? block.argumentDeltas.join('')),
+    ) ?? {},
+  );
 }
 
 function stopBlock(
@@ -1022,12 +1095,26 @@ function stopBlock(
 }
 
 function streamToolKey(event: JsonRecord) {
-  return (
+  return streamToolKeys(event)[0] ?? String(optionalNumber(event.output_index) ?? 0);
+}
+
+function streamToolKeys(event: JsonRecord) {
+  return [
     optionalString(event.item_id) ??
-    optionalString(event.output_item_id) ??
-    optionalString(event.id) ??
-    optionalString(event.call_id) ??
-    String(optionalNumber(event.output_index) ?? 0)
+      optionalString(event.output_item_id) ??
+      optionalString(event.id) ??
+      optionalString(event.call_id) ??
+      String(optionalNumber(event.output_index) ?? 0),
+    optionalString(event.item_id),
+    optionalString(event.output_item_id),
+    optionalString(event.id),
+    optionalString(event.call_id),
+    optionalNumber(event.output_index) !== undefined
+      ? String(optionalNumber(event.output_index))
+      : undefined,
+  ].filter(
+    (toolKey, index, toolKeys): toolKey is string =>
+      toolKey !== undefined && toolKey.length > 0 && toolKeys.indexOf(toolKey) === index,
   );
 }
 
@@ -1091,6 +1178,32 @@ function emitFinalContentFromCompleted(
   }
 }
 
+function emitMissingToolArgumentsFromCompleted(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  state: StreamState,
+  response: JsonRecord,
+) {
+  if (!Array.isArray(response.output)) return;
+
+  for (const item of response.output) {
+    if (!isRecord(item) || item.type !== 'function_call') continue;
+    const block = streamToolKeys(item)
+      .map((toolKey) => state.toolBlocks.get(toolKey))
+      .find((candidate): candidate is StreamToolBlock => !!candidate);
+    if (!block || block.argumentsEmitted || !state.openBlocks.has(block.index)) continue;
+
+    block.argumentsEmitted = true;
+    enqueueEvent(controller, 'content_block_delta', {
+      type: 'content_block_delta',
+      index: block.index,
+      delta: {
+        type: 'input_json_delta',
+        partial_json: streamToolArguments(block, item),
+      },
+    });
+  }
+}
+
 function completeMessage(
   controller: ReadableStreamDefaultController<Uint8Array>,
   state: StreamState,
@@ -1099,6 +1212,7 @@ function completeMessage(
   if (state.messageStopped) return;
   ensureMessageStart(controller, state);
   emitFinalContentFromCompleted(controller, state, response);
+  emitMissingToolArgumentsFromCompleted(controller, state, response);
 
   for (const index of [...state.openBlocks]) stopBlock(controller, state, index);
 
@@ -1164,6 +1278,10 @@ function handleStreamEvent(
     const key = streamToolKey(event);
     const block = startToolBlock(controller, state, key, event);
     if (!block) return;
+    if (block.translatedFrom) {
+      block.argumentDeltas.push(optionalString(event.delta) ?? '');
+      return;
+    }
     block.argumentsEmitted = true;
     enqueueEvent(controller, 'content_block_delta', {
       type: 'content_block_delta',
@@ -1180,13 +1298,17 @@ function handleStreamEvent(
     if (event.item.type !== 'function_call') return;
     const block = startToolBlock(controller, state, streamToolKey(event.item), event.item);
     if (!block) return;
-    if (!block.argumentsEmitted && typeof event.item.arguments === 'string') {
+    if (
+      !block.argumentsEmitted &&
+      (block.translatedFrom || typeof event.item.arguments === 'string')
+    ) {
+      block.argumentsEmitted = true;
       enqueueEvent(controller, 'content_block_delta', {
         type: 'content_block_delta',
         index: block.index,
         delta: {
           type: 'input_json_delta',
-          partial_json: event.item.arguments,
+          partial_json: streamToolArguments(block, event.item),
         },
       });
     }

@@ -209,7 +209,7 @@ describe('Anthropic adapter', () => {
     });
   });
 
-  it('converts unavailable Responses tool calls to text', () => {
+  it('converts unavailable Glob tool calls to Bash', () => {
     const message = responsesJsonToAnthropicMessage(
       {
         id: 'resp_1',
@@ -230,12 +230,15 @@ describe('Anthropic adapter', () => {
 
     expect(message.content).toEqual([
       {
-        type: 'text',
-        text: expect.stringContaining('Skipped unavailable tool "Glob"'),
+        type: 'tool_use',
+        id: 'call_2',
+        name: 'Bash',
+        input: {
+          command: expect.stringContaining("fd --hidden --glob '**/*.ts' ."),
+        },
       },
     ]);
-    expect(message.content).not.toContainEqual(expect.objectContaining({ type: 'tool_use' }));
-    expect(message.stop_reason).toBe('end_turn');
+    expect(message.stop_reason).toBe('tool_use');
   });
 
   it('converts unavailable WebSearch calls to text', () => {

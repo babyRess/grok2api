@@ -583,7 +583,7 @@ describe('Anthropic API handler', () => {
     expect(text).toContain('event: message_stop');
   });
 
-  it('blocks unavailable streaming tool calls before they reach Claude Code', async () => {
+  it('converts unavailable streaming Glob tool calls to Bash before they reach Claude Code', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       sseResponse([
         'event: response.created\n',
@@ -617,11 +617,14 @@ describe('Anthropic API handler', () => {
 
     const text = await response.text();
     expect(response.status).toBe(200);
-    expect(text).toContain('Skipped unavailable tool');
-    expect(text).toContain('Use Bash with find');
+    expect(text).toContain('"name":"Bash"');
+    expect(text).toContain("fd --hidden --glob '**/*.ts' .");
+    expect(text).toContain('find . -path');
     expect(text).not.toContain('"name":"Glob"');
-    expect(text).not.toContain('"type":"tool_use"');
-    expect(text).toContain('"stop_reason":"end_turn"');
+    expect(text).not.toContain('Skipped unavailable tool');
+    expect(text).not.toContain('Available tools');
+    expect(text).toContain('"type":"tool_use"');
+    expect(text).toContain('"stop_reason":"tool_use"');
   });
 
   it('serves OpenAI-compatible chat completions', async () => {
