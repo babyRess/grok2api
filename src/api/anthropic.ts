@@ -780,7 +780,6 @@ function stopReasonFromResponses(response: JsonRecord, hasToolUse: boolean) {
 
   const reason = optionalString(response.stop_reason) ?? optionalString(response.finish_reason);
   if (reason === 'max_tokens' || reason === 'length') return 'max_tokens';
-  if (reason === 'tool_calls' || reason === 'tool_use') return 'tool_use';
   if (reason === 'stop_sequence') return 'stop_sequence';
   return 'end_turn';
 }

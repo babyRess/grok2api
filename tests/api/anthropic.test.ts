@@ -214,6 +214,7 @@ describe('Anthropic adapter', () => {
       {
         id: 'resp_1',
         model: 'grok-build',
+        finish_reason: 'tool_calls',
         output: [
           {
             type: 'function_call',
@@ -234,6 +235,33 @@ describe('Anthropic adapter', () => {
       },
     ]);
     expect(message.content).not.toContainEqual(expect.objectContaining({ type: 'tool_use' }));
+    expect(message.stop_reason).toBe('end_turn');
+  });
+
+  it('converts unavailable WebSearch calls to text', () => {
+    const message = responsesJsonToAnthropicMessage(
+      {
+        id: 'resp_2',
+        model: 'grok-build',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_3',
+            name: 'WebSearch',
+            arguments: '{"query":"latest docs"}',
+          },
+        ],
+      },
+      'grok-build',
+      { allowedToolNames: ['Bash'] },
+    );
+
+    expect(message.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('Web search is not available in this session.'),
+      },
+    ]);
     expect(message.stop_reason).toBe('end_turn');
   });
 });
