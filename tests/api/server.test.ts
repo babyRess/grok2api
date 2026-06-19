@@ -39,6 +39,16 @@ function sseResponse(chunks: string[]) {
   );
 }
 
+function imageMessageContent() {
+  return [
+    { type: 'text', text: 'What is this?' },
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1n' },
+    },
+  ];
+}
+
 function handleStreamingBashTool(content: string, fetchMock: typeof fetch) {
   return handleAnthropicApiRequest(
     jsonRequest('/cc/v1/messages', {
@@ -401,6 +411,9 @@ describe('Anthropic API handler', () => {
   it('disables upstream storage and conversation affinity for image requests', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
       expect(new Headers(init?.headers).get('x-grok-conv-id')).toBeNull();
+      expect(new Headers(init?.headers).get('x-grok-model-override')).toBe(
+        'grok-composer-2.5-fast',
+      );
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
         model: 'grok-composer-2.5-fast',
@@ -415,6 +428,7 @@ describe('Anthropic API handler', () => {
           },
         ],
       });
+      expect(body.metadata).toBeUndefined();
       expect(body.prompt_cache_key).toBeUndefined();
       return Response.json({
         id: 'resp_image',
@@ -428,17 +442,12 @@ describe('Anthropic API handler', () => {
       jsonRequest(
         '/v1/messages',
         {
-          model: 'grok-composer-2.5-fast',
+          model: 'composer-2.5-fast',
+          metadata: { user_id: 'local-test' },
           messages: [
             {
               role: 'user',
-              content: [
-                { type: 'text', text: 'What is this?' },
-                {
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/png', data: 'aW1n' },
-                },
-              ],
+              content: imageMessageContent(),
             },
           ],
         },

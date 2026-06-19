@@ -1,5 +1,5 @@
 import { getBaseUrl } from '../auth/oauth.js';
-import { resolveModels } from '../models/catalog.js';
+import { resolveModels, upstreamModelId } from '../models/catalog.js';
 import { sanitizePayload } from '../payload/sanitize.js';
 
 const GROK_BUILD_VERSION = '0.2.22';
@@ -527,8 +527,9 @@ export function anthropicMessagesToResponsesPayload(
   const model = optionalString(body.model);
   if (!model) throw new AnthropicApiError(400, 'invalid_request_error', '`model` is required.');
 
+  const upstreamModel = upstreamModelId(model);
   const payload: JsonRecord = {
-    model,
+    model: upstreamModel,
     input: responsesInputFromMessages(body.messages),
   };
 
@@ -544,7 +545,6 @@ export function anthropicMessagesToResponsesPayload(
   if (optionalNumber(body.top_p) !== undefined) payload.top_p = body.top_p;
   if (typeof body.stream === 'boolean') payload.stream = body.stream;
   if (Array.isArray(body.stop_sequences)) payload.stop = body.stop_sequences;
-  if (isRecord(body.metadata)) payload.metadata = body.metadata;
 
   const tools = responsesTools(body.tools);
   if (tools) payload.tools = tools;
@@ -557,7 +557,7 @@ export function anthropicMessagesToResponsesPayload(
 
   return sanitizePayload(
     payload,
-    model,
+    upstreamModel,
     sessionIdFromHeaders(headers),
     options.cwd ?? process.cwd(),
   );

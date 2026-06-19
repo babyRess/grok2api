@@ -13,6 +13,7 @@
  *     array; these must be moved to top-level `instructions`.
  *   - xAI uses `text.format` instead of OpenAI's `response_format`.
  *   - xAI uses `prompt_cache_key` for conversation caching.
+ *   - xAI's Grok Build proxy rejects `metadata`.
  *   - xAI doesn't support `prompt_cache_retention`.
  *
  * Additional Grok Build-specific behavior:
@@ -310,6 +311,8 @@ export function sanitizePayload(
   }
 
   // ── Strip/filter unsupported fields ──────────────────────────────────
+  delete next.metadata;
+
   if (Array.isArray(next.include)) {
     next.include = (next.include as unknown[]).filter(
       (item) => item !== 'reasoning.encrypted_content',

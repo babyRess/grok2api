@@ -79,11 +79,11 @@ describe('Anthropic adapter', () => {
       top_p: 0.9,
       stop: ['STOP'],
       stream: false,
-      metadata: { user_id: 'local-test' },
       tool_choice: { type: 'function', name: 'lookup' },
       store: false,
       reasoning: { effort: 'medium' },
     });
+    expect(payload.metadata).toBeUndefined();
     expect(payload.prompt_cache_key).toBeUndefined();
     expect(payload.instructions).toEqual(
       expect.stringContaining('only call tools included in this request: lookup'),
@@ -134,6 +134,30 @@ describe('Anthropic adapter', () => {
         ],
       },
     ]);
+  });
+
+  it('normalizes Composer aliases before sending upstream', () => {
+    const payload = anthropicMessagesToResponsesPayload({
+      model: 'composer-2.5-fast',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'What is this?' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'aW1n' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(payload).toMatchObject({
+      model: 'grok-composer-2.5-fast',
+      store: false,
+    });
+    expect(JSON.stringify(payload)).toContain('input_image');
   });
 
   it('returns Anthropic-native model list metadata', () => {

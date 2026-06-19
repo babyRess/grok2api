@@ -107,10 +107,15 @@ const FALLBACK_MODELS: GrokBuildModelConfig[] = [
 ];
 
 const EFFORT_CAPABLE_PREFIXES = ['grok-3-mini', 'grok-4.20-multi-agent', 'grok-4.3'];
+const MODEL_ALIASES = new Map([['composer-2.5-fast', 'grok-composer-2.5-fast']]);
+
+export function upstreamModelId(modelId: string): string {
+  const name = modelId.split('/').at(-1) ?? modelId;
+  return MODEL_ALIASES.get(name.toLowerCase()) ?? modelId;
+}
 
 export function supportsReasoningEffort(modelId: string): boolean {
-  const parts = modelId.split('/');
-  const name = parts.at(-1) ?? modelId;
+  const name = upstreamModelId(modelId).split('/').at(-1) ?? modelId;
   const model = resolveModels().find((entry) => entry.id.toLowerCase() === name.toLowerCase());
   if (!EFFORT_CAPABLE_PREFIXES.some((prefix) => name.toLowerCase().startsWith(prefix))) {
     return false;
@@ -134,16 +139,21 @@ export function resolveModels(): GrokBuildModelConfig[] {
   if (env.length === 0) return FALLBACK_MODELS;
 
   const byId = new Map(FALLBACK_MODELS.map((m) => [m.id, m]));
-  return env.map(
-    (id) =>
-      byId.get(id) ?? {
-        id,
-        name: id,
-        reasoning: true,
-        input: ['text'] as ('text' | 'image')[],
-        cost: COST_BUILD,
-        contextWindow: 1_000_000,
-        maxTokens: 30_000,
-      },
-  );
+  return env.map((id) => {
+    const known = byId.get(id);
+    if (known) return known;
+
+    const aliasTarget = byId.get(upstreamModelId(id));
+    if (aliasTarget) return { ...aliasTarget, id };
+
+    return {
+      id,
+      name: id,
+      reasoning: true,
+      input: ['text'] as ('text' | 'image')[],
+      cost: COST_BUILD,
+      contextWindow: 1_000_000,
+      maxTokens: 30_000,
+    };
+  });
 }

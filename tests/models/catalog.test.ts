@@ -38,11 +38,16 @@ describe('model catalog', () => {
   });
 
   it('filters, reorders, and fills unknown model overrides', () => {
-    process.env.GROK_BUILD_MODELS = ' custom-model , grok-build ,, grok-4.3 ';
+    process.env.GROK_BUILD_MODELS = ' custom-model , composer-2.5-fast , grok-build ,, grok-4.3 ';
 
     const models = resolveModels();
 
-    expect(models.map((model) => model.id)).toEqual(['custom-model', 'grok-build', 'grok-4.3']);
+    expect(models.map((model) => model.id)).toEqual([
+      'custom-model',
+      'composer-2.5-fast',
+      'grok-build',
+      'grok-4.3',
+    ]);
     expect(models[0]).toMatchObject({
       name: 'custom-model',
       reasoning: true,
@@ -50,6 +55,10 @@ describe('model catalog', () => {
       contextWindow: 1_000_000,
       maxTokens: 30_000,
     });
-    expect(models[1].name).toBe('Grok Build');
+    expect(models[1]).toMatchObject({
+      name: 'Composer 2.5 Fast (Grok Build)',
+      input: ['text', 'image'],
+    });
+    expect(models[2].name).toBe('Grok Build');
   });
 });

@@ -24,6 +24,7 @@ describe('payload sanitization', () => {
           { role: 'system', content: 'later system instruction' },
         ],
         include: ['reasoning.encrypted_content', 'message.output_text'],
+        metadata: { user_id: 'local-test' },
         prompt_cache_retention: '24h',
         reasoning: { effort: 'minimal', summary: 'auto' },
         response_format: { type: 'json_object' },
@@ -38,6 +39,7 @@ describe('payload sanitization', () => {
     );
     expect(payload.input).toEqual([{ role: 'user', content: 'hello' }]);
     expect(payload.include).toEqual(['message.output_text']);
+    expect(payload.metadata).toBeUndefined();
     expect(payload.prompt_cache_retention).toBeUndefined();
     expect(payload.reasoning).toEqual({ effort: 'low' });
     expect(payload.text).toEqual({ format: { type: 'json_object' } });
