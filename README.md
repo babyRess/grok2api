@@ -1,51 +1,44 @@
 # open-grok-build
 
-[![CI](https://github.com/kenryu42/open-grok-build/actions/workflows/ci.yml/badge.svg)](https://github.com/kenryu42/open-grok-build/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/tag/kenryu42/open-grok-build?label=version&color=blue)](https://github.com/kenryu42/open-grok-build)
-[![License: MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensource.org/licenses/MIT)
-
-
-[OpenCode](https://opencode.ai) plugin that connects xAI's **Grok Build** models (`cli-chat-proxy.grok.com`) to your terminal. Ships OAuth 2.0 + PKCE authentication, a curated model catalog, payload sanitization for xAI API quirks, and live billing queries — all as a drop-in plugin.
+Anthropic-compatible local API gateway for xAI Grok Build models
+(`cli-chat-proxy.grok.com`). It translates Anthropic and OpenAI-compatible
+requests into Grok Build Responses API calls, sanitizes payload quirks, and can
+rotate traffic across multiple Grok Build accounts.
 
 ## Features
 
-- **OAuth 2.0 + PKCE** — Browser-based login via `auth.x.ai` with automatic token refresh
-- **Model catalog** — Six Grok Build models with correct cost, context window, and reasoning metadata
-- **Payload sanitization** — Transparent rewrites for xAI's Responses API quirks (reasoning strip, image normalization, system→instructions, `response_format`→`text.format`, and more)
-- **Billing usage** — `/grok-build-usage` slash command shows live credit quota as a TUI toast (no LLM turn consumed)
+- Anthropic-compatible endpoints for Claude-style clients
+- OpenAI-compatible `POST /v1/chat/completions`
+- Grok Build payload sanitization for reasoning, images, system messages, tools,
+  response formats, and session cache keys
+- Account groups with `balanced` round-robin or `priority` failover
+- Per-account retry and per-request retry limits
+- Browser login helper page to create account JSON entries
+- Optional local client API key protection
 
 ## Quick Start
 
-### 1. Install
+Install dependencies and start the local gateway:
 
 ```bash
-opencode plugin -g open-grok-build
-```
-
-This registers both the server plugin (models, OAuth, payload sanitization) and the TUI plugin (`/grok-build-usage` slash command). Restart the TUI after installing.
-
-### 2. Connect
-
-```
-/connect grok-build → Grok Build (cli-chat-proxy)
-```
-
-Or set `GROK_BUILD_OAUTH_TOKEN` for a static token bypass (no auto-refresh).
-
-### Anthropic-compatible local API
-
-OpenCode can also use this project through its Anthropic provider:
-
-```bash
-export GROK_BUILD_OAUTH_TOKEN="xai-oauth-access-token"
-export GROK_BUILD_API_KEY="local-client-key" # optional, enables client auth
+bun install
 bun run api
 ```
 
 The server listens on `http://127.0.0.1:8990` by default. Override with
 `GROK_BUILD_API_HOST` and `GROK_BUILD_API_PORT`.
 
-Configure OpenCode with an Anthropic base URL:
+## Single Account
+
+For a simple static upstream token:
+
+```bash
+export GROK_BUILD_OAUTH_TOKEN="xai-oauth-access-token"
+export GROK_BUILD_API_KEY="local-client-key"
+bun run api
+```
+
+Clients call the Anthropic base URL:
 
 ```json
 {
@@ -60,114 +53,216 @@ Configure OpenCode with an Anthropic base URL:
 }
 ```
 
-For a custom OpenCode provider, use `npm: "@ai-sdk/anthropic"` with the same
-`options.baseURL` value.
-
-The API exposes `GET /v1/models`, `POST /v1/messages`,
-`POST /v1/messages/count_tokens`, and the OpenAI-compatible
-`POST /v1/chat/completions`, plus Claude Code aliases under `/cc/v1`.
 Client auth accepts either `x-api-key` or `Authorization: Bearer ...` when
-`GROK_BUILD_API_KEY` is set. Upstream Grok Build calls require
-`GROK_BUILD_OAUTH_TOKEN` or `GROK_BUILD_ACCESS_TOKEN`.
+`GROK_BUILD_API_KEY` is set.
 
-#### Docker
+## Account Groups
 
-Create a local env file. It is ignored by git and Docker build context.
-
-```bash
-cp .env.example .env
-```
-
-Fill `GROK_BUILD_OAUTH_TOKEN` or `GROK_BUILD_ACCESS_TOKEN` with an upstream
-xAI/Grok Build access token. Set `GROK_BUILD_API_KEY` in `.env` to any local
-client key you want callers to use, then run:
-
-```bash
-docker compose up --build
-```
-
-Or without Compose:
-
-```bash
-docker build -t open-grok-build:local .
-docker run --rm --env-file .env -e GROK_BUILD_API_HOST=0.0.0.0 -p 8990:8990 open-grok-build:local
-```
-
-Clients should use the Anthropic-compatible base URL
-`http://127.0.0.1:8990/v1`.
-
-OpenAI-compatible chat completions clients can also call:
-
-```bash
-curl -s http://127.0.0.1:8990/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -H 'x-api-key: local-client-key' \
-  -d '{"model":"grok-composer-2.5-fast","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' | jq
-```
-
-### Local checkout
-
-For development, use an absolute path:
+Use `GROK_BUILD_ACCOUNTS` for inline JSON, or `GROK_BUILD_ACCOUNTS_FILE` for a
+JSON file. Account entries may use `access`, `accessToken`, `token`, `refresh`,
+`refreshToken`, `expires`, `expiresAt`, `tokenEndpoint`, `priority`, and
+`disabled`.
 
 ```json
 {
-  "plugin": ["/path/to/open-grok-build"]
+  "mode": "balanced",
+  "groups": [
+    {
+      "id": "personal",
+      "accounts": [
+        {
+          "id": "personal-a",
+          "access": "xai-access-token-a",
+          "priority": 0
+        },
+        {
+          "id": "personal-b",
+          "access": "xai-access-token-b",
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "tokens": ["xai-access-token-c", "xai-access-token-d"]
+    }
+  ]
 }
 ```
 
-## Models
+Start with a file:
 
-| Model | Context | Max Output | Reasoning | Input |
-|---|---|---|---|---|
-| `grok-composer-2.5-fast` | 200K | 30K | — | text, image |
-| `grok-build` | 512K | 30K | ✓ | text, image |
-| `grok-4.3` | 1M | 30K | ✓ | text, image |
-| `grok-4.20-0309-reasoning` | 2M | 30K | ✓ | text, image |
-| `grok-4.20-0309-non-reasoning` | 2M | 30K | — | text, image |
-| `grok-4.20-multi-agent-0309` | 2M | 30K | ✓ | text, image |
+```bash
+export GROK_BUILD_ACCOUNTS_FILE="$PWD/accounts.json"
+bun run api
+```
 
-Override with `GROK_BUILD_MODELS` (comma-separated model IDs). Unknown IDs get sensible defaults.
+Pick a group per request with `x-grok-account-group`:
 
-## Payload Sanitization
+```bash
+curl http://127.0.0.1:8990/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -H 'x-grok-account-group: personal' \
+  -d '{
+    "model": "grok-build",
+    "max_tokens": 64,
+    "messages": [{"role":"user","content":"hello"}]
+  }'
+```
 
-The plugin transparently rewrites outgoing requests to handle xAI's Responses API differences from stock OpenAI:
+If no group header is provided, `GROK_BUILD_ACCOUNT_GROUP` is used. If that is
+also empty, all enabled accounts are eligible.
 
-- Strips replayed `reasoning` items (cause 400 errors on xAI)
-- Drops empty-string content items
-- Moves `role: "developer"` / `role: "system"` messages to top-level `instructions`
-- Converts `image_url` parts to `input_image` with data URIs
-- Resolves local image paths (`.jpg`, `.jpeg`, `.png`) to base64 — workspace-scoped for security
-- Extracts images from `function_call_output.output` arrays into separate user messages
-- Maps `response_format` → `text.format`
-- Adds `prompt_cache_key` for session-affinity caching
-- Normalizes `reasoning.effort` for models that support it
+### Rotation Modes
+
+`balanced` is the default for account pools and rotates eligible accounts in a
+round-robin order.
+
+`priority` retries lower-priority-number accounts first, then fails over to the
+next account when retryable upstream failures continue.
+
+Configure with either field:
+
+```bash
+export GROK_BUILD_ACCOUNT_ROTATION=balanced
+export GROK_BUILD_LOAD_BALANCING_MODE=priority
+```
+
+Retry defaults:
+
+- `GROK_BUILD_ACCOUNT_RETRIES=3`
+- `GROK_BUILD_ACCOUNT_REQUEST_RETRIES=9`
+
+## Login Helper
+
+Open the local helper page after starting the server:
+
+```text
+http://127.0.0.1:8990/auth/grok-build/login
+```
+
+Create a login session, use the private-login button or copy the login URL into
+an incognito/private window, finish xAI authorization, then copy the generated
+account JSON into your `GROK_BUILD_ACCOUNTS_FILE`.
+
+The private-login button attempts to launch Chrome Incognito on macOS and Linux.
+If your browser blocks that or Chrome is unavailable, use the normal login URL
+manually in a private window.
+
+When `GROK_BUILD_API_KEY` is set, the page asks for it before creating or polling
+login sessions.
+
+### Headless VPS Login
+
+For a VPS with no desktop browser, make the OAuth callback reachable from your
+local browser:
+
+```bash
+export GROK_BUILD_CALLBACK_HOST=0.0.0.0
+export GROK_BUILD_CALLBACK_PUBLIC_HOST="your-vps-domain.example"
+export GROK_BUILD_CALLBACK_PUBLIC_PORT=56122
+bun run api
+```
+
+Open firewall or reverse-proxy access for the callback port, then create a login
+session from SSH:
+
+```bash
+curl -s http://127.0.0.1:8990/auth/grok-build/sessions \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -d '{"group":"vps"}' | jq
+```
+
+Copy the returned `url`, open it in a private browser window on your local
+machine, finish xAI authorization, then poll the session until it returns
+`status: "success"`:
+
+```bash
+curl -s http://127.0.0.1:8990/auth/grok-build/sessions/<session-id> \
+  -H 'x-api-key: local-client-key' | jq
+```
+
+If your callback is behind HTTPS or a reverse proxy, set the exact public
+redirect URL:
+
+```bash
+export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
+```
+
+## API Routes
+
+| Route | Method | Description |
+|---|---:|---|
+| `/health` | GET | Health check |
+| `/v1/models` | GET | Anthropic-style model list |
+| `/v1/messages` | POST | Anthropic-compatible messages |
+| `/v1/messages/count_tokens` | POST | Deterministic local token estimate |
+| `/cc/v1/messages` | POST | Claude Code alias for messages |
+| `/cc/v1/messages/count_tokens` | POST | Claude Code alias for token estimate |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat completions |
+| `/auth/grok-build/login` | GET | Browser helper for account JSON |
+| `/auth/grok-build/sessions` | POST | Create an OAuth login session |
+| `/auth/grok-build/sessions/<id>` | GET | Poll an OAuth login session |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `GROK_BUILD_BASE_URL` | `https://cli-chat-proxy.grok.com/v1` | API base URL |
-| `GROK_BUILD_MODELS` | *(catalog)* | Comma-separated model IDs to expose |
-| `GROK_BUILD_OAUTH_CLIENT_ID` | *(built-in)* | OAuth client ID override |
+| `GROK_BUILD_BASE_URL` | `https://cli-chat-proxy.grok.com/v1` | Upstream API base URL |
+| `GROK_BUILD_MODELS` | catalog | Comma-separated model IDs to expose |
+| `GROK_BUILD_OAUTH_TOKEN` | none | Legacy single static upstream token |
+| `GROK_BUILD_ACCESS_TOKEN` | none | Legacy single static upstream token alias |
+| `GROK_BUILD_ACCOUNTS` | none | Inline account pool JSON |
+| `GROK_BUILD_ACCOUNTS_FILE` | none | Account pool JSON file |
+| `GROK_BUILD_ACCOUNT_GROUP` | none | Default account group |
+| `GROK_BUILD_ACCOUNT_ROTATION` | `balanced` | `balanced` or `priority` |
+| `GROK_BUILD_LOAD_BALANCING_MODE` | none | Alias for rotation mode |
+| `GROK_BUILD_ACCOUNT_RETRIES` | `3` | Max attempts per account |
+| `GROK_BUILD_ACCOUNT_REQUEST_RETRIES` | `9` | Max upstream attempts per request |
+| `GROK_BUILD_API_KEY` | none | Optional local client API key |
+| `GROK_BUILD_API_HOST` | `127.0.0.1` | Local API host |
+| `GROK_BUILD_API_PORT` | `8990` | Local API port |
+| `GROK_BUILD_OAUTH_CLIENT_ID` | built-in | OAuth client ID override |
 | `GROK_BUILD_CALLBACK_HOST` | `127.0.0.1` | OAuth loopback callback host |
 | `GROK_BUILD_CALLBACK_PORT` | `56122` | OAuth loopback callback port |
-| `GROK_BUILD_OAUTH_TOKEN` | — | Static token bypass (skips OAuth, no refresh) |
-| `GROK_BUILD_ACCESS_TOKEN` | — | Static upstream access token for the Anthropic-compatible API |
-| `GROK_BUILD_API_KEY` | — | Optional client API key for the Anthropic-compatible API |
-| `GROK_BUILD_API_HOST` | `127.0.0.1` | Anthropic-compatible API host |
-| `GROK_BUILD_API_PORT` | `8990` | Anthropic-compatible API port |
-| `GROK_BUILD_TOKEN_TIMEOUT_MS` | `30000` | Timeout for OAuth token requests |
+| `GROK_BUILD_CALLBACK_PUBLIC_HOST` | callback host | Public host used in OAuth redirect URL |
+| `GROK_BUILD_CALLBACK_PUBLIC_PORT` | callback port | Public port used in OAuth redirect URL |
+| `GROK_BUILD_CALLBACK_PROTOCOL` | `http` | Public redirect protocol |
+| `GROK_BUILD_CALLBACK_URL` | none | Exact public OAuth redirect URL override |
+| `GROK_BUILD_TOKEN_TIMEOUT_MS` | `30000` | OAuth token request timeout |
+
+## Models
+
+| Model | Context | Max Output | Reasoning | Input |
+|---|---:|---:|---|---|
+| `grok-composer-2.5-fast` | 200K | 30K | - | text, image |
+| `grok-build` | 512K | 30K | yes | text, image |
+| `grok-4.3` | 1M | 30K | yes | text, image |
+| `grok-4.20-0309-reasoning` | 2M | 30K | yes | text, image |
+| `grok-4.20-0309-non-reasoning` | 2M | 30K | - | text, image |
+| `grok-4.20-multi-agent-0309` | 2M | 30K | yes | text, image |
+
+Override with `GROK_BUILD_MODELS` (comma-separated model IDs). Unknown IDs get
+sensible defaults.
+
+## Docker
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Clients should use `http://127.0.0.1:8990/v1` as the Anthropic-compatible base
+URL.
 
 ## Development
 
 ```bash
 bun install
-bun run check        # lint + typecheck + knip + duplicate check + coverage
-bun run test         # tests only
-bun run typecheck    # tsc --noEmit
-bun run coverage     # tests with coverage
+bun run check
 ```
 
-## License
-
-[MIT](LICENSE)
+`bun run check` runs formatting/linting, typecheck, production dependency
+checks, duplicate detection, and coverage.

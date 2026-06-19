@@ -1,11 +1,17 @@
 /**
- * open-grok-build — Grok Build OpenCode plugin.
+ * open-grok-build - Grok Build Anthropic-compatible API gateway.
  */
 
 export {
+  type AccountEnvironment,
+  type AccountRotationMode,
   type AnthropicApiHandlerOptions,
   type AnthropicApiServerOptions,
+  accountGroupFromHeaders,
+  accountKey,
+  type GrokAccount,
+  type GrokAccountPool,
   handleAnthropicApiRequest,
+  resolveAccountPool,
   startAnthropicApiServer,
 } from './api/index.js';
-export { OpenGrokBuildPlugin, OpenGrokBuildPlugin as default } from './opencode/plugin.js';

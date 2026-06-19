@@ -108,6 +108,28 @@ function validateEndpoint(value: string, field: string): string {
   return url.toString();
 }
 
+function callbackHost() {
+  return process.env.GROK_BUILD_CALLBACK_HOST || CALLBACK_HOST;
+}
+
+function callbackPort() {
+  return Number.parseInt(process.env.GROK_BUILD_CALLBACK_PORT || String(CALLBACK_PORT), 10);
+}
+
+function callbackRedirectUri(actualPort: number) {
+  if (process.env.GROK_BUILD_CALLBACK_URL?.trim()) {
+    return process.env.GROK_BUILD_CALLBACK_URL.trim();
+  }
+
+  const protocol = process.env.GROK_BUILD_CALLBACK_PROTOCOL || 'http';
+  const publicHost =
+    process.env.GROK_BUILD_CALLBACK_PUBLIC_HOST ||
+    process.env.GROK_BUILD_CALLBACK_HOST ||
+    CALLBACK_HOST;
+  const publicPort = process.env.GROK_BUILD_CALLBACK_PUBLIC_PORT || String(actualPort);
+  return `${protocol}://${publicHost}:${publicPort}${CALLBACK_PATH}`;
+}
+
 // ─── OIDC Discovery ──────────────────────────────────────────────────────────
 
 async function discover(): Promise<XaiDiscovery> {
@@ -184,7 +206,7 @@ function startCallbackServer(): Promise<{
         return;
       }
 
-      const url = new URL(req.url ?? '/', `http://${CALLBACK_HOST}`);
+      const url = new URL(req.url ?? '/', `http://${callbackHost()}`);
       if (url.pathname !== CALLBACK_PATH) {
         res.statusCode = 404;
         res.end('Not found');
@@ -214,7 +236,7 @@ function startCallbackServer(): Promise<{
   const listen = (port: number) =>
     new Promise<number>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(port, CALLBACK_HOST, () => {
+      server.listen(port, callbackHost(), () => {
         server.removeListener('error', reject);
         const addr = server.address();
         resolve(typeof addr === 'object' && addr ? addr.port : port);
@@ -224,15 +246,15 @@ function startCallbackServer(): Promise<{
   return (async () => {
     let actualPort: number;
     try {
-      actualPort = await listen(CALLBACK_PORT);
+      actualPort = await listen(callbackPort());
     } catch (firstError) {
       try {
         actualPort = await listen(0);
       } catch (secondError) {
-        const errorDescription = `Could not bind xAI OAuth callback server on ${CALLBACK_HOST}:${CALLBACK_PORT} or an ephemeral port: ${secondError instanceof Error ? secondError.message : String(secondError)} (initial error: ${firstError instanceof Error ? firstError.message : String(firstError)})`;
+        const errorDescription = `Could not bind xAI OAuth callback server on ${callbackHost()}:${callbackPort()} or an ephemeral port: ${secondError instanceof Error ? secondError.message : String(secondError)} (initial error: ${firstError instanceof Error ? firstError.message : String(firstError)})`;
         return {
           server,
-          redirectUri: `http://${CALLBACK_HOST}:${CALLBACK_PORT}${CALLBACK_PATH}`,
+          redirectUri: callbackRedirectUri(callbackPort()),
           waitForCallback: async () => ({
             error: XaiErrorCode.CALLBACK_BIND_FAILED,
             errorDescription,
@@ -240,7 +262,7 @@ function startCallbackServer(): Promise<{
         };
       }
     }
-    const redirectUri = `http://${CALLBACK_HOST}:${actualPort}${CALLBACK_PATH}`;
+    const redirectUri = callbackRedirectUri(actualPort);
     return {
       server,
       redirectUri,

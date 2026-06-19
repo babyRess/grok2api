@@ -1,4 +1,13 @@
 export {
+  type AccountEnvironment,
+  type AccountRotationMode,
+  accountGroupFromHeaders,
+  accountKey,
+  type GrokAccount,
+  type GrokAccountPool,
+  resolveAccountPool,
+} from './accounts.js';
+export {
   type AnthropicAdapterOptions,
   type AnthropicApiEnvironment,
   AnthropicApiError,

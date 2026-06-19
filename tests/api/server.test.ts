@@ -179,6 +179,104 @@ describe('Anthropic API handler', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('rotates upstream tokens within the requested account group', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        id: 'resp_rotated',
+        model: 'grok-build',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+      }),
+    );
+    const env = {
+      GROK_BUILD_ACCOUNTS: JSON.stringify({
+        mode: 'balanced',
+        groups: [
+          {
+            id: 'team',
+            accounts: [
+              { id: 'team-a', access: 'token-a' },
+              { id: 'team-b', access: 'token-b' },
+            ],
+          },
+        ],
+      }),
+    };
+
+    await handleAnthropicApiRequest(
+      jsonRequest(
+        '/v1/messages',
+        { model: 'grok-build', messages: [{ role: 'user', content: 'Hello' }] },
+        { 'x-grok-account-group': 'team' },
+      ),
+      { env, fetch: fetchMock },
+    );
+    await handleAnthropicApiRequest(
+      jsonRequest(
+        '/v1/messages',
+        { model: 'grok-build', messages: [{ role: 'user', content: 'Again' }] },
+        { 'x-grok-account-group': 'team' },
+      ),
+      { env, fetch: fetchMock },
+    );
+
+    expect(
+      fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('authorization')),
+    ).toEqual(['Bearer token-a', 'Bearer token-b']);
+  });
+
+  it('retries a priority account before failing over to the next account', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) =>
+      new Headers(init?.headers).get('authorization') === 'Bearer token-a'
+        ? new Response('rate limited', { status: 429 })
+        : Response.json({
+            id: 'resp_failover',
+            model: 'grok-build',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+          }),
+    );
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/v1/messages', {
+        model: 'grok-build',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      {
+        env: {
+          GROK_BUILD_ACCOUNT_ROTATION: 'priority',
+          GROK_BUILD_ACCOUNTS: JSON.stringify([
+            { id: 'first', access: 'token-a', priority: 0 },
+            { id: 'second', access: 'token-b', priority: 1 },
+          ]),
+        },
+        fetch: fetchMock,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(
+      fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('authorization')),
+    ).toEqual(['Bearer token-a', 'Bearer token-a', 'Bearer token-a', 'Bearer token-b']);
+  });
+
+  it('serves the browser login page while protecting session actions with the API key', async () => {
+    const login = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/login'),
+      { env: { GROK_BUILD_API_KEY: 'local-key' } },
+    );
+    expect(login.status).toBe(200);
+    expect(await login.text()).toContain('Create login session');
+
+    const blocked = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+      { env: { GROK_BUILD_API_KEY: 'local-key' } },
+    );
+    expect(blocked.status).toBe(401);
+  });
+
   it('converts streaming text and tool call Responses events to Anthropic SSE', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       sseResponse([

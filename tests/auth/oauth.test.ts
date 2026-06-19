@@ -27,6 +27,15 @@ function authorizeCallback(auth: { url: string }) {
   );
 }
 
+function oauthLoginFetchMock(payload: Record<string, unknown>) {
+  return vi.fn<typeof fetch>(async (input) => {
+    if (input === 'https://auth.x.ai/.well-known/openid-configuration') {
+      return Response.json(discoveryDocument);
+    }
+    return Response.json(payload);
+  });
+}
+
 afterEach(() => {
   process.env = { ...originalEnv };
   globalThis.fetch = originalFetch;
@@ -277,17 +286,12 @@ describe('OAuth helpers without network access', () => {
   it('logs in with a loopback callback and exchanges the authorization code', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);
-    const fetchMock = vi.fn<typeof fetch>(async (input) => {
-      if (input === 'https://auth.x.ai/.well-known/openid-configuration') {
-        return Response.json(discoveryDocument);
-      }
-      return Response.json({
-        access_token: 'login-access',
-        refresh_token: 'login-refresh',
-        expires_in: 900,
-        id_token: 'login-id',
-        token_type: 'Bearer',
-      });
+    const fetchMock = oauthLoginFetchMock({
+      access_token: 'login-access',
+      refresh_token: 'login-refresh',
+      expires_in: 900,
+      id_token: 'login-id',
+      token_type: 'Bearer',
     });
     globalThis.fetch = fetchMock;
 
@@ -309,6 +313,35 @@ describe('OAuth helpers without network access', () => {
     expect((fetchMock.mock.calls[1]?.[1]?.body as URLSearchParams).get('code')).toBe(
       'callback-code',
     );
+  });
+
+  it('uses the configured public callback host in the authorization URL', async () => {
+    process.env.GROK_BUILD_CALLBACK_PUBLIC_HOST = 'localhost';
+    const seenRedirectUris: string[] = [];
+    const fetchMock = oauthLoginFetchMock({
+      access_token: 'login-access',
+      refresh_token: 'login-refresh',
+      expires_in: 900,
+    });
+    globalThis.fetch = fetchMock;
+
+    await expect(
+      login({
+        onAuth: (auth) => {
+          const url = new URL(auth.url);
+          const redirectUri = url.searchParams.get('redirect_uri') ?? '';
+          seenRedirectUris.push(redirectUri);
+          void originalFetch(
+            `${redirectUri}?code=callback-code&state=${url.searchParams.get('state')}`,
+          );
+        },
+      }),
+    ).resolves.toMatchObject({
+      access: 'login-access',
+      refresh: 'login-refresh',
+    });
+
+    expect(seenRedirectUris[0]).toMatch(/^http:\/\/localhost:\d+\/callback$/);
   });
 
   it('reports callback timeouts with a dedicated error code', async () => {
