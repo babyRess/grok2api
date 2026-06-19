@@ -1209,6 +1209,22 @@ function completeMessage(
   state.messageStopped = true;
 }
 
+function emitIncompleteStreamError(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  state: StreamState,
+) {
+  if (state.messageStopped) return;
+  for (const index of [...state.openBlocks]) stopBlock(controller, state, index);
+  enqueueEvent(controller, 'error', {
+    type: 'error',
+    error: {
+      type: 'api_error',
+      message: 'Upstream Responses stream ended before response.completed.',
+    },
+  });
+  state.messageStopped = true;
+}
+
 function handleStreamEvent(
   controller: ReadableStreamDefaultController<Uint8Array>,
   state: StreamState,
@@ -1338,9 +1354,7 @@ export function responsesStreamToAnthropicSse(
           handleStreamEvent(controller, state, event.event, event.data);
         }
 
-        if (state.messageStarted && !state.messageStopped) {
-          completeMessage(controller, state, { model: state.model, usage: {} });
-        }
+        emitIncompleteStreamError(controller, state);
       } catch (cause) {
         enqueueEvent(controller, 'error', {
           type: 'error',
@@ -1370,6 +1384,7 @@ export function responsesStreamToOpenAIChatCompletionsSse(
       const blockedToolCalls = new Set<string>();
       const conversionOptions = resolvedToolUseOptions(options);
       const toolIndexes = new Map<string, number>();
+      let streamStopped = false;
 
       const enqueue = (chunk: JsonRecord | '[DONE]') => {
         controller.enqueue(encoder.encode(openAISse(chunk)));
@@ -1466,6 +1481,7 @@ export function responsesStreamToOpenAIChatCompletionsSse(
               ),
             );
             enqueue('[DONE]');
+            streamStopped = true;
             continue;
           }
 
@@ -1478,7 +1494,18 @@ export function responsesStreamToOpenAIChatCompletionsSse(
               },
             });
             enqueue('[DONE]');
+            streamStopped = true;
           }
+        }
+
+        if (!streamStopped) {
+          enqueue({
+            error: {
+              type: 'api_error',
+              message: 'Upstream Responses stream ended before response.completed.',
+            },
+          });
+          enqueue('[DONE]');
         }
       } catch (cause) {
         enqueue({

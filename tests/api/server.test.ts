@@ -69,6 +69,20 @@ function handleStreamingBashTool(content: string, fetchMock: typeof fetch) {
   );
 }
 
+function handleStreamingOpenAIChat(fetchMock: typeof fetch) {
+  return handleAnthropicApiRequest(
+    jsonRequest('/v1/chat/completions', {
+      model: 'grok-build',
+      stream: true,
+      messages: [{ role: 'user', content: 'Hi' }],
+    }),
+    {
+      env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+      fetch: fetchMock,
+    },
+  );
+}
+
 describe('Anthropic API handler', () => {
   it('requires the configured client API key and accepts x-api-key', async () => {
     const blocked = await handleAnthropicApiRequest(new Request('http://local/v1/models'), {
@@ -720,6 +734,37 @@ describe('Anthropic API handler', () => {
     expect(text).toContain('event: message_stop');
   });
 
+  it('surfaces incomplete Anthropic streams instead of ending the message normally', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      sseResponse([
+        'event: response.created\n',
+        'data: {"type":"response.created","response":{"id":"resp_stream","model":"grok-build"}}\n\n',
+        'event: response.output_text.delta\n',
+        'data: {"type":"response.output_text.delta","delta":"Partial"}\n\n',
+      ]),
+    );
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/cc/v1/messages', {
+        model: 'grok-build',
+        stream: true,
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      {
+        env: { GROK_BUILD_ACCESS_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain('"type":"text_delta","text":"Partial"');
+    expect(text).toContain('event: error');
+    expect(text).toContain('Upstream Responses stream ended before response.completed.');
+    expect(text).not.toContain('event: message_stop');
+    expect(text).not.toContain('"stop_reason":"end_turn"');
+  });
+
   it('converts unavailable streaming Glob tool calls to Bash before they reach Claude Code', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       sseResponse([
@@ -845,17 +890,7 @@ describe('Anthropic API handler', () => {
       ]),
     );
 
-    const stream = await handleAnthropicApiRequest(
-      jsonRequest('/v1/chat/completions', {
-        model: 'grok-build',
-        stream: true,
-        messages: [{ role: 'user', content: 'Hi' }],
-      }),
-      {
-        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
-        fetch: fetchMock,
-      },
-    );
+    const stream = await handleStreamingOpenAIChat(fetchMock);
 
     const events = (await stream.text()).split('\n\n').filter(Boolean);
     expect(stream.status).toBe(200);
@@ -872,5 +907,23 @@ describe('Anthropic API handler', () => {
         'data: [DONE]',
       ]),
     );
+  });
+
+  it('surfaces incomplete OpenAI-compatible streams before DONE', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      sseResponse([
+        'data: {"type":"response.created","response":{"id":"resp_openai_stream","model":"grok-build"}}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+      ]),
+    );
+
+    const stream = await handleStreamingOpenAIChat(fetchMock);
+
+    const text = await stream.text();
+    expect(stream.status).toBe(200);
+    expect(text).toContain('"delta":{"content":"Hel"}');
+    expect(text).toContain('Upstream Responses stream ended before response.completed.');
+    expect(text).toContain('data: [DONE]');
+    expect(text).not.toContain('"finish_reason":"stop"');
   });
 });
