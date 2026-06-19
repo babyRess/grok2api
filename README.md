@@ -242,6 +242,7 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 |---|---|---|
 | `GROK_BUILD_BASE_URL` | `https://cli-chat-proxy.grok.com/v1` | Upstream API base URL |
 | `GROK_BUILD_MODELS` | catalog | Comma-separated model IDs to expose |
+| `GROK_BUILD_IMAGE_MODEL` | `grok-build` | Fallback model when upstream rejects image input for the requested model |
 | `GROK_BUILD_OAUTH_TOKEN` | none | Legacy single static upstream token |
 | `GROK_BUILD_ACCESS_TOKEN` | none | Legacy single static upstream token alias |
 | `GROK_BUILD_ACCOUNTS` | none | Inline account pool JSON |

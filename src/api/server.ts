@@ -572,10 +572,11 @@ async function fetchUpstreamResponses(
     }
     if (!token) continue;
 
+    const hasInputImage = payloadHasInputImage(payload);
     const headers = grokResponsesHeaders(
       token,
       model,
-      payloadHasInputImage(payload) ? undefined : sessionIdFromHeaders(request.headers),
+      hasInputImage ? undefined : sessionIdFromHeaders(request.headers),
     );
     if (payload.stream === true) headers.set('accept', 'text/event-stream');
 
@@ -584,6 +585,25 @@ async function fetchUpstreamResponses(
       headers,
       body: JSON.stringify(payload),
     });
+
+    if (hasInputImage && !response.ok) {
+      const imageError = await unsupportedImageModelResponse(response);
+      if (imageError?.unsupported) {
+        const fallbackModel = imageFallbackModel(env);
+        if (fallbackModel !== model) {
+          const fallbackPayload: Record<string, unknown> = { ...payload, model: fallbackModel };
+          const fallbackHeaders = grokResponsesHeaders(token, fallbackModel);
+          if (fallbackPayload.stream === true) fallbackHeaders.set('accept', 'text/event-stream');
+          const fallbackResponse = await (options.fetch ?? fetch)(upstreamResponsesUrl(), {
+            method: 'POST',
+            headers: fallbackHeaders,
+            body: JSON.stringify(fallbackPayload),
+          });
+          return { model: fallbackModel, response: fallbackResponse };
+        }
+      }
+      if (imageError) return { model, response: responseFromText(response, imageError.text) };
+    }
 
     if (!shouldRetryWithAnotherAccount(response)) return { model, response };
     lastResponse = response;
@@ -610,6 +630,27 @@ function eventStreamResponse(body: ReadableStream<Uint8Array>) {
       connection: 'keep-alive',
     },
   });
+}
+
+function responseFromText(response: Response, text: string) {
+  return new Response(text, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+function imageFallbackModel(env: AnthropicApiEnvironment) {
+  return env.GROK_BUILD_IMAGE_MODEL?.trim() || 'grok-build';
+}
+
+async function unsupportedImageModelResponse(response: Response) {
+  if (response.status !== 400) return undefined;
+  const text = await response.text();
+  return {
+    text,
+    unsupported: /Image inputs are not supported by this model/i.test(text),
+  };
 }
 
 async function responseFromUpstream(

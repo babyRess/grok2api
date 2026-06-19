@@ -463,6 +463,57 @@ describe('Anthropic API handler', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('retries image requests with a vision fallback model when upstream rejects the model', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      const body = JSON.parse(String(init?.body));
+      if (fetchMock.mock.calls.length === 1) {
+        expect(headers.get('x-grok-model-override')).toBe('grok-composer-2.5-fast');
+        expect(body.model).toBe('grok-composer-2.5-fast');
+        return Response.json(
+          {
+            code: 'invalid-argument',
+            error: 'Invalid request content: Image inputs are not supported by this model.',
+          },
+          { status: 400 },
+        );
+      }
+
+      expect(headers.get('x-grok-conv-id')).toBeNull();
+      expect(headers.get('x-grok-model-override')).toBe('grok-build');
+      expect(body).toMatchObject({ model: 'grok-build', store: false });
+      expect(body.prompt_cache_key).toBeUndefined();
+      return Response.json({
+        id: 'resp_image_fallback',
+        model: 'grok-build',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'Image ok.' }] }],
+        usage: { input_tokens: 10, output_tokens: 3 },
+      });
+    });
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest(
+        '/v1/messages',
+        {
+          model: 'composer-2.5-fast',
+          messages: [{ role: 'user', content: imageMessageContent() }],
+        },
+        { 'x-session-id': 'session-image' },
+      ),
+      {
+        env: { GROK_BUILD_OAUTH_TOKEN: 'upstream-token' },
+        fetch: fetchMock,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(response.json()).resolves.toMatchObject({
+      model: 'grok-build',
+      content: [{ type: 'text', text: 'Image ok.' }],
+    });
+  });
+
   it('rotates upstream tokens within the requested account group', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       Response.json({
