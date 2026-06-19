@@ -251,11 +251,66 @@ sensible defaults.
 
 ```bash
 cp .env.example .env
+mkdir -p data
+cat > data/accounts.json <<'EOF'
+{
+  "mode": "balanced",
+  "groups": []
+}
+EOF
 docker compose up --build
 ```
 
 Clients should use `http://127.0.0.1:8990/v1` as the Anthropic-compatible base
 URL.
+
+For a Docker VPS, edit `.env` like this:
+
+```bash
+GROK_BUILD_API_HOST=0.0.0.0
+GROK_BUILD_API_PORT=8990
+GROK_BUILD_API_KEY=local-client-key
+
+GROK_BUILD_ACCOUNTS_FILE=/data/accounts.json
+GROK_BUILD_ACCOUNT_ROTATION=balanced
+
+GROK_BUILD_CALLBACK_HOST=0.0.0.0
+GROK_BUILD_CALLBACK_PORT=56122
+GROK_BUILD_CALLBACK_PUBLIC_HOST=your-vps-domain-or-ip
+GROK_BUILD_CALLBACK_PUBLIC_PORT=56122
+GROK_BUILD_CALLBACK_PROTOCOL=http
+```
+
+Then run:
+
+```bash
+docker compose up -d --build
+docker compose logs -f open-grok-build
+```
+
+Create a headless login session from SSH:
+
+```bash
+curl -s http://127.0.0.1:8990/auth/grok-build/sessions \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -d '{"group":"default"}' | jq
+```
+
+Open the returned `url` in a private browser window on your local machine, then
+poll for the generated account JSON:
+
+```bash
+curl -s http://127.0.0.1:8990/auth/grok-build/sessions/<session-id> \
+  -H 'x-api-key: local-client-key' | jq
+```
+
+Append the returned `account` object into `data/accounts.json` under the group
+you want, then restart:
+
+```bash
+docker compose restart open-grok-build
+```
 
 ## Development
 

@@ -11,7 +11,7 @@ COPY src ./src
 
 USER bun
 
-EXPOSE 8990
+EXPOSE 8990 56122
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD bun --eval "fetch('http://127.0.0.1:' + (process.env.GROK_BUILD_API_PORT || '8990') + '/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
