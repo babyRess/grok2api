@@ -241,7 +241,7 @@ describe('Anthropic adapter', () => {
     expect(message.stop_reason).toBe('tool_use');
   });
 
-  it('converts unavailable WebSearch calls to text', () => {
+  it('drops unavailable WebSearch calls without fallback text', () => {
     const message = responsesJsonToAnthropicMessage(
       {
         id: 'resp_2',
@@ -259,12 +259,7 @@ describe('Anthropic adapter', () => {
       { allowedToolNames: ['Bash'] },
     );
 
-    expect(message.content).toEqual([
-      {
-        type: 'text',
-        text: expect.stringContaining('Web search is not available in this session.'),
-      },
-    ]);
+    expect(message.content).toEqual([]);
     expect(message.stop_reason).toBe('end_turn');
   });
 });

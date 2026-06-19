@@ -39,6 +39,26 @@ function sseResponse(chunks: string[]) {
   );
 }
 
+function handleStreamingBashTool(content: string, fetchMock: typeof fetch) {
+  return handleAnthropicApiRequest(
+    jsonRequest('/cc/v1/messages', {
+      model: 'grok-build',
+      stream: true,
+      messages: [{ role: 'user', content }],
+      tools: [
+        {
+          name: 'Bash',
+          input_schema: { type: 'object', properties: { command: { type: 'string' } } },
+        },
+      ],
+    }),
+    {
+      env: { GROK_BUILD_ACCESS_TOKEN: 'upstream-token' },
+      fetch: fetchMock,
+    },
+  );
+}
+
 describe('Anthropic API handler', () => {
   it('requires the configured client API key and accepts x-api-key', async () => {
     const blocked = await handleAnthropicApiRequest(new Request('http://local/v1/models'), {
@@ -597,23 +617,7 @@ describe('Anthropic API handler', () => {
       ]),
     );
 
-    const response = await handleAnthropicApiRequest(
-      jsonRequest('/cc/v1/messages', {
-        model: 'grok-build',
-        stream: true,
-        messages: [{ role: 'user', content: 'Find files' }],
-        tools: [
-          {
-            name: 'Bash',
-            input_schema: { type: 'object', properties: { command: { type: 'string' } } },
-          },
-        ],
-      }),
-      {
-        env: { GROK_BUILD_ACCESS_TOKEN: 'upstream-token' },
-        fetch: fetchMock,
-      },
-    );
+    const response = await handleStreamingBashTool('Find files', fetchMock);
 
     const text = await response.text();
     expect(response.status).toBe(200);
@@ -625,6 +629,33 @@ describe('Anthropic API handler', () => {
     expect(text).not.toContain('Available tools');
     expect(text).toContain('"type":"tool_use"');
     expect(text).toContain('"stop_reason":"tool_use"');
+  });
+
+  it('drops unsupported streaming tool calls without fallback text', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      sseResponse([
+        'event: response.created\n',
+        'data: {"type":"response.created","response":{"id":"resp_stream","model":"grok-build"}}\n\n',
+        'event: response.output_item.added\n',
+        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"Read"}}\n\n',
+        'event: response.function_call_arguments.delta\n',
+        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\\"file_path\\":\\"README.md\\"}"}\n\n',
+        'event: response.completed\n',
+        'data: {"type":"response.completed","response":{"id":"resp_stream","model":"grok-build","output":[{"type":"function_call","call_id":"call_2","name":"Read","arguments":"{\\"file_path\\":\\"README.md\\"}"}],"usage":{"input_tokens":4,"output_tokens":2}}}\n\n',
+      ]),
+    );
+
+    const response = await handleStreamingBashTool('Read README', fetchMock);
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).not.toContain('A requested tool is not available in this session');
+    expect(text).not.toContain('Skipped unavailable tool');
+    expect(text).not.toContain('Available tools');
+    expect(text).not.toContain('"name":"Read"');
+    expect(text).not.toContain('"type":"tool_use"');
+    expect(text).toContain('event: message_stop');
+    expect(text).toContain('"stop_reason":"end_turn"');
   });
 
   it('serves OpenAI-compatible chat completions', async () => {

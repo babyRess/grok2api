@@ -672,16 +672,6 @@ function toolUseBlockFromFunctionCall(
   };
 }
 
-function unavailableToolUseText(name: string, options: ResolvedToolUseConversionOptions) {
-  const normalized = name.toLowerCase();
-  if (['websearch', 'web_search'].includes(normalized)) {
-    return options.allowedToolNames?.has('web_search')
-      ? 'Web search must be requested with the web_search tool name.'
-      : 'Web search is not available in this session.';
-  }
-  return 'A requested tool is not available in this session.';
-}
-
 function contentFromOutputItem(
   item: unknown,
   options: ResolvedToolUseConversionOptions = {},
@@ -698,9 +688,7 @@ function contentFromOutputItem(
   if (item.type === 'function_call') {
     const toolUse = toolUseBlockFromFunctionCall(item, options);
     if (toolUse) return [toolUse];
-    return [
-      { type: 'text', text: unavailableToolUseText(optionalString(item.name) ?? 'tool', options) },
-    ];
+    return [];
   }
 
   const text = outputTextContent(item);
@@ -1029,14 +1017,6 @@ function startToolBlock(
   if (!toolNameAllowed(name, state.conversionOptions) && !translatedName) {
     streamToolKeys(item ?? { id: key }).forEach((toolKey) => {
       state.blockedToolBlocks.add(toolKey);
-    });
-    enqueueEvent(controller, 'content_block_delta', {
-      type: 'content_block_delta',
-      index: startTextBlock(controller, state),
-      delta: {
-        type: 'text_delta',
-        text: unavailableToolUseText(name, state.conversionOptions),
-      },
     });
     return undefined;
   }
@@ -1429,11 +1409,6 @@ export function responsesStreamToOpenAIChatCompletionsSse(
             const name = optionalString(event.item.name) ?? 'tool';
             if (!toolNameAllowed(name, conversionOptions)) {
               blockedToolCalls.add(key);
-              enqueue(
-                openAIChatCompletionChunk(id, responseModel, {
-                  content: unavailableToolUseText(name, conversionOptions),
-                }),
-              );
               continue;
             }
 
