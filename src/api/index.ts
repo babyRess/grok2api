@@ -3,9 +3,11 @@ export {
   type AccountRotationMode,
   accountGroupFromHeaders,
   accountKey,
+  accountSummaries,
   type GrokAccount,
   type GrokAccountPool,
   resolveAccountPool,
+  saveAccountToPoolFile,
 } from './accounts.js';
 export {
   type AnthropicAdapterOptions,

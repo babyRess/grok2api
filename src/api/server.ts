@@ -8,10 +8,13 @@ import {
   accountGroupFromHeaders,
   accountKey,
   accountRetryLimit,
+  accountSummaries,
   accountToken,
+  type GrokAccount,
   type GrokAccountPool,
   requestRetryLimit,
   resolveAccountPool,
+  saveAccountToPoolFile,
   selectAccount,
   shouldRetryWithAnotherAccount,
 } from './accounts.js';
@@ -46,6 +49,16 @@ export type AnthropicApiServerOptions = AnthropicApiHandlerOptions & {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function textField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value !== 'number' || !Number.isFinite(value) ? undefined : value;
 }
 
 function normalizedPath(request: Request) {
@@ -128,68 +141,133 @@ function loginPage() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Grok Build account login</title>
+  <title>Grok Build admin</title>
   <style>
     :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: Canvas; color: CanvasText; }
-    main { width: min(760px, calc(100vw - 32px)); display: grid; gap: 18px; }
-    h1 { margin: 0; font-size: 24px; line-height: 1.2; letter-spacing: 0; }
-    p { margin: 0; color: color-mix(in srgb, CanvasText 72%, Canvas 28%); line-height: 1.5; }
-    form, section { border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }
+    body { margin: 0; min-height: 100vh; background: Canvas; color: CanvasText; }
+    main { width: min(1120px, calc(100vw - 32px)); margin: 28px auto; display: grid; gap: 18px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    h1, h2, h3, p { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; line-height: 1.2; }
+    h2 { font-size: 16px; line-height: 1.3; }
+    h3 { font-size: 14px; line-height: 1.3; }
+    p, .muted { color: color-mix(in srgb, CanvasText 68%, Canvas 32%); line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr); gap: 18px; align-items: start; }
+    section, form { border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%); border-radius: 8px; padding: 16px; display: grid; gap: 14px; }
     label { display: grid; gap: 7px; font-size: 13px; font-weight: 650; }
     input, textarea { width: 100%; box-sizing: border-box; border: 1px solid color-mix(in srgb, CanvasText 24%, Canvas 76%); border-radius: 6px; padding: 10px 11px; font: inherit; background: Canvas; color: CanvasText; }
-    textarea { min-height: 180px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    textarea { min-height: 220px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
     button, a.button { border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%); border-radius: 6px; padding: 10px 12px; font: inherit; font-weight: 650; background: CanvasText; color: Canvas; text-decoration: none; cursor: pointer; }
     button.secondary, a.secondary { background: Canvas; color: CanvasText; }
     button:disabled { opacity: .55; cursor: not-allowed; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .hidden { display: none; }
     .status { min-height: 22px; font-size: 13px; }
+    .records { display: grid; gap: 10px; }
+    .record { border: 1px solid color-mix(in srgb, CanvasText 14%, Canvas 86%); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .tag { border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%); border-radius: 6px; padding: 3px 7px; font-size: 12px; color: color-mix(in srgb, CanvasText 76%, Canvas 24%); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>Grok Build account login</h1>
-      <p>Create a credential entry for the Anthropic-compatible API account pool.</p>
+      <div>
+        <h1>Grok Build admin</h1>
+        <p>Manage account groups for the Anthropic-compatible gateway.</p>
+      </div>
+      <button id="refresh" type="button" class="secondary">Refresh accounts</button>
     </header>
-    <form id="login-form">
-      <label>Local API key
-        <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="Only required when GROK_BUILD_API_KEY is set">
-      </label>
-      <label>Account group
-        <input id="group" name="group" autocomplete="off" placeholder="default">
-      </label>
-      <div class="actions">
-        <button id="start" type="submit">Create login session</button>
-        <button id="private" type="button" class="secondary" disabled>Open private login</button>
-        <a id="normal" class="button secondary hidden" target="_blank" rel="noreferrer">Open normal tab</a>
-      </div>
-      <div id="status" class="status"></div>
-    </form>
-    <section id="result" class="hidden">
-      <label>Account JSON
-        <textarea id="account-json" readonly></textarea>
-      </label>
-      <div class="actions">
-        <button id="copy" type="button" class="secondary">Copy account JSON</button>
-      </div>
-    </section>
+    <div class="grid">
+      <section>
+        <h2>Accounts</h2>
+        <div id="pool-meta" class="muted">Enter the local API key to load accounts.</div>
+        <div id="accounts" class="records"></div>
+      </section>
+      <section>
+        <h2>Add account</h2>
+        <form id="login-form">
+          <label>Local API key
+            <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="GROK_BUILD_API_KEY">
+          </label>
+          <label>Account group
+            <input id="group" name="group" autocomplete="off" placeholder="default" value="default">
+          </label>
+          <div class="actions">
+            <button id="start" type="submit">Create login session</button>
+            <button id="private" type="button" class="secondary" disabled>Open private login</button>
+            <a id="normal" class="button secondary hidden" target="_blank" rel="noreferrer">Open login URL</a>
+          </div>
+          <div id="status" class="status"></div>
+        </form>
+        <div id="result" class="hidden">
+          <label>Account JSON
+            <textarea id="account-json" readonly></textarea>
+          </label>
+          <div class="actions">
+            <button id="save" type="button">Save to account file</button>
+            <button id="copy" type="button" class="secondary">Copy JSON</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
   <script>
     const form = document.querySelector('#login-form');
     const status = document.querySelector('#status');
+    const poolMeta = document.querySelector('#pool-meta');
+    const accounts = document.querySelector('#accounts');
+    const refreshButton = document.querySelector('#refresh');
     const privateButton = document.querySelector('#private');
     const normalLink = document.querySelector('#normal');
     const result = document.querySelector('#result');
     const accountJson = document.querySelector('#account-json');
     const copyButton = document.querySelector('#copy');
+    const saveButton = document.querySelector('#save');
+    const apiKeyInput = document.querySelector('#api-key');
+    const groupInput = document.querySelector('#group');
     let sessionId;
     let timer;
+    let latestAccount;
 
     const headers = () => {
-      const apiKey = document.querySelector('#api-key').value.trim();
+      const apiKey = apiKeyInput.value.trim();
       return apiKey ? { 'content-type': 'application/json', 'x-api-key': apiKey } : { 'content-type': 'application/json' };
+    };
+
+    const renderAccounts = (payload) => {
+      poolMeta.textContent = payload.sourcePath
+        ? 'Source: ' + payload.sourcePath + ' · mode: ' + payload.mode
+        : 'No GROK_BUILD_ACCOUNTS_FILE is configured.';
+      accounts.innerHTML = '';
+      if (!payload.accounts?.length) {
+        accounts.innerHTML = '<div class="record muted">No accounts saved yet.</div>';
+        return;
+      }
+      for (const account of payload.accounts) {
+        const record = document.createElement('div');
+        record.className = 'record';
+        const expires = account.expires ? new Date(account.expires).toLocaleString() : 'no expiry';
+        record.innerHTML =
+          '<div class="row"><h3>' + account.id + '</h3><span class="tag">' + account.group + '</span></div>' +
+          '<div class="row muted"><span>priority ' + account.priority + '</span><span>' + expires + '</span></div>' +
+          '<div class="row"><span class="tag">' + (account.hasAccess ? 'access' : 'no access') + '</span><span class="tag">' + (account.hasRefresh ? 'refresh' : 'no refresh') + '</span></div>';
+        accounts.appendChild(record);
+      }
+    };
+
+    const loadAccounts = async () => {
+      poolMeta.textContent = 'Loading accounts...';
+      const response = await fetch('/auth/grok-build/accounts', { headers: headers() });
+      const payload = await response.json();
+      if (!response.ok) {
+        poolMeta.textContent = payload.error?.message || 'Could not load accounts.';
+        accounts.innerHTML = '';
+        return;
+      }
+      renderAccounts(payload);
     };
 
     const poll = async () => {
@@ -203,6 +281,7 @@ function loginPage() {
       clearInterval(timer);
       if (payload.status === 'success') {
         status.textContent = 'Credential received.';
+        latestAccount = payload.account;
         accountJson.value = JSON.stringify(payload.account, null, 2);
         result.classList.remove('hidden');
         return;
@@ -218,7 +297,7 @@ function loginPage() {
       const response = await fetch('/auth/grok-build/sessions', {
         method: 'POST',
         headers: headers(),
-        body: JSON.stringify({ group: document.querySelector('#group').value.trim() || 'default' })
+        body: JSON.stringify({ group: groupInput.value.trim() || 'default' })
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -247,6 +326,27 @@ function loginPage() {
       await navigator.clipboard.writeText(accountJson.value);
       status.textContent = 'Copied account JSON.';
     });
+
+    saveButton.addEventListener('click', async () => {
+      if (!latestAccount) return;
+      status.textContent = 'Saving account...';
+      const response = await fetch('/auth/grok-build/accounts', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ account: latestAccount })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        status.textContent = payload.error?.message || 'Could not save account.';
+        return;
+      }
+      status.textContent = 'Account saved.';
+      renderAccounts(payload);
+    });
+
+    refreshButton.addEventListener('click', loadAccounts);
+    apiKeyInput.addEventListener('change', loadAccounts);
+    void loadAccounts();
   </script>
 </body>
 </html>`,
@@ -277,6 +377,56 @@ function loginSessionJson(session: LoginSession) {
     url: session.url,
     instructions: session.instructions,
     expiresAt: session.expiresAt,
+  });
+}
+
+function accountPoolJson(env: AnthropicApiEnvironment) {
+  const pool = resolveAccountPool(env);
+  return Response.json({
+    mode: pool.mode,
+    sourcePath: pool.sourcePath ?? null,
+    writable: !!pool.sourcePath,
+    accounts: accountSummaries(pool),
+  });
+}
+
+function accountFromAdminPayload(value: unknown): GrokAccount {
+  const payload = isRecord(value) && isRecord(value.account) ? value.account : value;
+  if (!isRecord(payload)) {
+    throw new AnthropicApiError(400, 'invalid_request_error', '`account` must be an object.');
+  }
+
+  const access = textField(payload.access);
+  const refresh = textField(payload.refresh);
+  const expires = numberField(payload.expires);
+  const tokenEndpoint = textField(payload.tokenEndpoint);
+  if (!access && !refresh) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      '`account.access` or `account.refresh` is required.',
+    );
+  }
+
+  return {
+    id: textField(payload.id) ?? `xai-${new Date().toISOString()}`,
+    group: textField(payload.group) ?? 'default',
+    priority: numberField(payload.priority) ?? 0,
+    disabled: payload.disabled === true,
+    ...(access ? { access } : {}),
+    ...(refresh ? { refresh } : {}),
+    ...(expires !== undefined ? { expires } : {}),
+    ...(tokenEndpoint ? { tokenEndpoint } : {}),
+  };
+}
+
+async function saveAdminAccount(request: Request, env: AnthropicApiEnvironment) {
+  const pool = saveAccountToPoolFile(env, accountFromAdminPayload(await requestJson(request)));
+  return Response.json({
+    mode: pool.mode,
+    sourcePath: pool.sourcePath ?? null,
+    writable: !!pool.sourcePath,
+    accounts: accountSummaries(pool),
   });
 }
 
@@ -533,6 +683,14 @@ export async function handleAnthropicApiRequest(
 
     const authError = clientAuthError(request, options.env ?? process.env);
     if (authError) return authError;
+
+    if (request.method === 'GET' && pathname === '/auth/grok-build/accounts') {
+      return accountPoolJson(options.env ?? process.env);
+    }
+
+    if (request.method === 'POST' && pathname === '/auth/grok-build/accounts') {
+      return saveAdminAccount(request, options.env ?? process.env);
+    }
 
     if (request.method === 'POST' && pathname === '/auth/grok-build/sessions') {
       return createLoginSession(request);

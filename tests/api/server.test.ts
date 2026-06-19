@@ -1,10 +1,15 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAnthropicApiRequest } from '../../src/api/server.js';
 
 const originalEnv = { ...process.env };
+const tempDirs: string[] = [];
 
 afterEach(() => {
   process.env = { ...originalEnv };
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
@@ -264,7 +269,7 @@ describe('Anthropic API handler', () => {
       { env: { GROK_BUILD_API_KEY: 'local-key' } },
     );
     expect(login.status).toBe(200);
-    expect(await login.text()).toContain('Create login session');
+    await expect(login.text()).resolves.toContain('Grok Build admin');
 
     const blocked = await handleAnthropicApiRequest(
       new Request('http://local/auth/grok-build/sessions', {
@@ -275,6 +280,56 @@ describe('Anthropic API handler', () => {
       { env: { GROK_BUILD_API_KEY: 'local-key' } },
     );
     expect(blocked.status).toBe(401);
+  });
+
+  it('lists and saves accounts through the admin API', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grok-server-accounts-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'accounts.json'), '{"mode":"balanced","groups":[]}');
+    const env = {
+      GROK_BUILD_API_KEY: 'local-key',
+      GROK_BUILD_ACCOUNTS_FILE: join(dir, 'accounts.json'),
+    };
+
+    const empty = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/accounts', {
+        headers: { 'x-api-key': 'local-key' },
+      }),
+      { env },
+    );
+    await expect(empty.json()).resolves.toMatchObject({
+      writable: true,
+      accounts: [],
+    });
+
+    const saved = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/accounts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
+        body: JSON.stringify({
+          account: {
+            id: 'admin-added',
+            group: 'default',
+            access: 'access-token',
+            refresh: 'refresh-token',
+          },
+        }),
+      }),
+      { env },
+    );
+
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({
+      accounts: [
+        {
+          id: 'admin-added',
+          group: 'default',
+          hasAccess: true,
+          hasRefresh: true,
+        },
+      ],
+    });
+    expect(readFileSync(join(dir, 'accounts.json'), 'utf8')).toContain('admin-added');
   });
 
   it('converts streaming text and tool call Responses events to Anthropic SSE', async () => {

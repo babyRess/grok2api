@@ -143,8 +143,9 @@ http://127.0.0.1:8990/auth/grok-build/login
 ```
 
 Create a login session, use the private-login button or copy the login URL into
-an incognito/private window, finish xAI authorization, then copy the generated
-account JSON into your `GROK_BUILD_ACCOUNTS_FILE`.
+an incognito/private window, finish xAI authorization, then press
+`Save to account file` in the admin UI. The account is written to
+`GROK_BUILD_ACCOUNTS_FILE`.
 
 The private-login button attempts to launch Chrome Incognito on macOS and Linux.
 If your browser blocks that or Chrome is unavailable, use the normal login URL
@@ -202,7 +203,9 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `/cc/v1/messages` | POST | Claude Code alias for messages |
 | `/cc/v1/messages/count_tokens` | POST | Claude Code alias for token estimate |
 | `/v1/chat/completions` | POST | OpenAI-compatible chat completions |
-| `/auth/grok-build/login` | GET | Browser helper for account JSON |
+| `/auth/grok-build/login` | GET | Browser admin for account login and saving |
+| `/auth/grok-build/accounts` | GET | List redacted account summaries |
+| `/auth/grok-build/accounts` | POST | Save an account into the account file |
 | `/auth/grok-build/sessions` | POST | Create an OAuth login session |
 | `/auth/grok-build/sessions/<id>` | GET | Poll an OAuth login session |
 
@@ -305,8 +308,14 @@ curl -s http://127.0.0.1:8990/auth/grok-build/sessions/<session-id> \
   -H 'x-api-key: local-client-key' | jq
 ```
 
-Append the returned `account` object into `data/accounts.json` under the group
-you want, then restart:
+You can also open the admin UI and save the account directly:
+
+```text
+http://YOUR_VPS_IP_OR_DOMAIN:8990/auth/grok-build/login
+```
+
+If you use the headless curl flow instead, append the returned `account` object
+into `data/accounts.json` under the group you want, then restart:
 
 ```bash
 docker compose restart open-grok-build

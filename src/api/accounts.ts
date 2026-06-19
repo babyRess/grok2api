@@ -26,6 +26,17 @@ export type GrokAccountPool = {
   sourcePath?: string;
 };
 
+export type GrokAccountSummary = {
+  id: string;
+  group: string;
+  priority: number;
+  disabled: boolean;
+  hasAccess: boolean;
+  hasRefresh: boolean;
+  expires?: number;
+  tokenEndpoint?: string;
+};
+
 export type AccountEnvironment = Record<string, string | undefined>;
 
 const cursors = new Map<string, number>();
@@ -288,6 +299,19 @@ function accountForWrite(account: GrokAccount) {
   };
 }
 
+export function accountSummaries(pool: GrokAccountPool): GrokAccountSummary[] {
+  return sortedAccounts(pool.accounts).map((account) => ({
+    id: account.id,
+    group: account.group,
+    priority: account.priority,
+    disabled: account.disabled,
+    hasAccess: !!account.access,
+    hasRefresh: !!account.refresh,
+    ...(account.expires !== undefined ? { expires: account.expires } : {}),
+    ...(account.tokenEndpoint ? { tokenEndpoint: account.tokenEndpoint } : {}),
+  }));
+}
+
 function persistPool(pool: GrokAccountPool) {
   if (!pool.sourcePath) return;
   writeFileSync(
@@ -304,6 +328,23 @@ function persistPool(pool: GrokAccountPool) {
       2,
     )}\n`,
   );
+}
+
+export function saveAccountToPoolFile(env: AccountEnvironment = process.env, account: GrokAccount) {
+  const pool = resolveAccountPool(env);
+  if (!pool.sourcePath) {
+    throw new Error('GROK_BUILD_ACCOUNTS_FILE is required to save accounts from the admin UI.');
+  }
+
+  persistPool({
+    ...pool,
+    accounts: [
+      ...pool.accounts.filter((existing) => accountKey(existing) !== accountKey(account)),
+      account,
+    ],
+  });
+
+  return resolveAccountPool(env);
 }
 
 export async function accountToken(pool: GrokAccountPool, account: GrokAccount) {

@@ -1,6 +1,7 @@
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 - ALWAYS use `bun run check` to verify changes except for doc-related changes. This runs typecheck, knip, biome lint, and tests together. Do not run these separately.
+- UI/UX work must read `openspec/ui-dna.md` (or the existing DNA doc) before any visual change.
 
 ## Style Guide
 
