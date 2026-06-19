@@ -38,6 +38,7 @@ import {
   type ToolUseConversionOptions,
   upstreamResponsesUrl,
 } from './anthropic.js';
+import { isWebSearchOnlyRequest, webSearchAnthropicResponse } from './websearch.js';
 
 export type AnthropicApiHandlerOptions = {
   cwd?: string;
@@ -627,6 +628,15 @@ async function responseFromUpstream(
 }
 
 async function handleMessages(request: Request, options: AnthropicApiHandlerOptions) {
+  const body = await requestJson(request);
+  if (isWebSearchOnlyRequest(body)) {
+    return webSearchAnthropicResponse(body, {
+      env: options.env ?? process.env,
+      fetch: options.fetch,
+      inputTokens: countAnthropicTokens(body).input_tokens,
+    });
+  }
+
   const pool = resolveAccountPool(options.env ?? process.env);
   if (pool.accounts.length === 0) {
     return anthropicErrorResponse(
@@ -636,7 +646,6 @@ async function handleMessages(request: Request, options: AnthropicApiHandlerOpti
     );
   }
 
-  const body = await requestJson(request);
   const conversionOptions = { allowedToolNames: anthropicToolNamesFromRequest(body) };
   const payload = anthropicMessagesToResponsesPayload(body, request.headers, {
     cwd: options.cwd,

@@ -125,6 +125,117 @@ describe('Anthropic API handler', () => {
     });
   });
 
+  it('serves Claude Code web_search-only requests without an upstream Grok token', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(input).toBe('https://search.example/api');
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer search-key');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        query: 'Claude Code WebSearch support',
+        count: 5,
+      });
+      return Response.json({
+        results: [
+          {
+            title: 'Claude Code docs',
+            url: 'https://docs.example/claude-code',
+            snippet: 'Claude Code can use server-side web search.',
+          },
+        ],
+      });
+    });
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/cc/v1/messages', {
+        model: 'grok-build',
+        stream: true,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Perform a web search for the query: Claude Code WebSearch support',
+              },
+            ],
+          },
+        ],
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      }),
+      {
+        env: {
+          GROK_BUILD_WEB_SEARCH_ENDPOINT: 'https://search.example/api',
+          GROK_BUILD_WEB_SEARCH_API_KEY: 'search-key',
+        },
+        fetch: fetchMock,
+      },
+    );
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(text).toContain('"type":"server_tool_use"');
+    expect(text).toContain('"name":"web_search"');
+    expect(text).toContain('"type":"web_search_tool_result"');
+    expect(text).toContain('Claude Code docs');
+    expect(text).toContain('https://docs.example/claude-code');
+    expect(text).toContain('"server_tool_use":{"web_search_requests":1}');
+    expect(text).toContain('"stop_reason":"end_turn"');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('serves WebSearch alias requests as non-streaming server search results', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        results: [
+          {
+            title: 'Search result',
+            url: 'https://example.com/search-result',
+            snippet: 'A custom endpoint result.',
+          },
+        ],
+      }),
+    );
+
+    const response = await handleAnthropicApiRequest(
+      jsonRequest('/v1/messages', {
+        model: 'grok-build',
+        stream: false,
+        messages: [{ role: 'user', content: 'latest Grok Build docs' }],
+        tools: [{ name: 'WebSearch' }],
+      }),
+      {
+        env: { GROK_BUILD_WEB_SEARCH_ENDPOINT: 'https://search.example/api' },
+        fetch: fetchMock,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [
+        { type: 'text' },
+        { type: 'server_tool_use', name: 'web_search' },
+        {
+          type: 'web_search_tool_result',
+          content: [
+            {
+              type: 'web_search_result',
+              title: 'Search result',
+              url: 'https://example.com/search-result',
+              encrypted_content: 'A custom endpoint result.',
+            },
+          ],
+        },
+        { type: 'text', text: expect.stringContaining('latest Grok Build docs') },
+      ],
+      stop_reason: 'end_turn',
+      usage: { server_tool_use: { web_search_requests: 1 } },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('posts sanitized Responses payloads upstream and converts non-streaming responses', async () => {
     process.env.GROK_BUILD_BASE_URL = 'https://proxy.example/v1/';
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {

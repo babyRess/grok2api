@@ -14,6 +14,7 @@ rotate traffic across multiple Grok Build accounts.
 - Account groups with `balanced` round-robin or `priority` failover
 - Per-account retry and per-request retry limits
 - Browser login helper page to create account JSON entries
+- Server-side Claude Code `web_search` / `WebSearch` handling
 - Optional local client API key protection
 
 ## Quick Start
@@ -154,6 +155,28 @@ manually in a private window.
 When `GROK_BUILD_API_KEY` is set, the page asks for it before creating or polling
 login sessions.
 
+## WebSearch
+
+Claude Code can send Anthropic server-tool requests where the only tool is
+`web_search`. The gateway handles those requests locally and returns Anthropic
+`server_tool_use` plus `web_search_tool_result` blocks instead of forwarding
+them as normal function tools.
+
+By default, WebSearch uses DuckDuckGo's instant-answer API with no API key. For
+better VPS reliability, configure either a custom JSON search endpoint or Brave
+Search:
+
+```bash
+# Custom endpoint: POST JSON {"query":"...","count":5}; accepts results/items/web.results
+export GROK_BUILD_WEB_SEARCH_ENDPOINT="https://search.example/api"
+export GROK_BUILD_WEB_SEARCH_API_KEY="optional-key"
+
+# Or Brave Search
+export GROK_BUILD_BRAVE_SEARCH_API_KEY="brave-search-key"
+```
+
+Limit results with `GROK_BUILD_WEB_SEARCH_MAX_RESULTS` (default `5`, max `10`).
+
 ### Headless VPS Login
 
 For a VPS with no desktop browser, make the OAuth callback reachable from your
@@ -235,6 +258,12 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `GROK_BUILD_CALLBACK_PROTOCOL` | `http` | Public redirect protocol |
 | `GROK_BUILD_CALLBACK_URL` | none | Exact public OAuth redirect URL override |
 | `GROK_BUILD_TOKEN_TIMEOUT_MS` | `30000` | OAuth token request timeout |
+| `GROK_BUILD_WEB_SEARCH_ENDPOINT` | none | Optional custom WebSearch JSON endpoint |
+| `GROK_BUILD_WEB_SEARCH_API_KEY` | none | Optional API key for custom WebSearch endpoint |
+| `GROK_BUILD_WEB_SEARCH_AUTH_HEADER` | `authorization` | Header used for the custom WebSearch key |
+| `GROK_BUILD_WEB_SEARCH_MAX_RESULTS` | `5` | WebSearch result limit, from `1` to `10` |
+| `GROK_BUILD_BRAVE_SEARCH_API_KEY` | none | Optional Brave Search API key |
+| `GROK_BUILD_BRAVE_SEARCH_ENDPOINT` | Brave API | Optional Brave Search endpoint override |
 
 ## Models
 
