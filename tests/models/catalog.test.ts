@@ -29,9 +29,11 @@ describe('model catalog', () => {
     ]);
     expect(models.find((model) => model.id === 'grok-composer-2.5-fast')).toMatchObject({
       contextWindow: 200_000,
+      input: ['text'],
     });
     expect(models.find((model) => model.id === 'grok-build')).toMatchObject({
       contextWindow: 512_000,
+      input: ['text', 'image'],
     });
   });
 

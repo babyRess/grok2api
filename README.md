@@ -274,7 +274,7 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 
 | Model | Context | Max Output | Reasoning | Input |
 |---|---:|---:|---|---|
-| `grok-composer-2.5-fast` | 200K | 30K | - | text, image |
+| `grok-composer-2.5-fast` | 200K | 30K | - | text |
 | `grok-build` | 512K | 30K | yes | text, image |
 | `grok-4.3` | 1M | 30K | yes | text, image |
 | `grok-4.20-0309-reasoning` | 2M | 30K | yes | text, image |
