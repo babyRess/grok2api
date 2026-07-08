@@ -1,0 +1,16 @@
+meta {
+  name: Proxy meta
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/auth/grok-build/proxy
+  body: none
+  auth: none
+}
+
+docs {
+  # Proxy meta
+  Returns whether the default proxy API key is active.
+}

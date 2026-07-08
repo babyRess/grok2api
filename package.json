@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit",
     "prepack": "bun run test && bun run coverage && bun run typecheck",
     "api": "bun src/api/cli.ts",
+    "bench": "bun scripts/benchmark-tokens.ts",
     "knip": "knip --production",
     "lint": "biome check --write .",
     "lint:ci": "biome ci .",

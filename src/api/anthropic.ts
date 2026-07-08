@@ -130,16 +130,26 @@ export function anthropicErrorResponse(
   );
 }
 
-export function clientAuthError(request: Request, env = process.env): Response | undefined {
-  const expected = env.GROK_BUILD_API_KEY;
-  if (!expected) return undefined;
+/** Single client key for this proxy gateway (admin UI + /v1 clients). */
+export const DEFAULT_PROXY_API_KEY = 'local-client-key';
 
+export function resolveProxyApiKey(env: AnthropicApiEnvironment = process.env) {
+  const configured = env.GROK_BUILD_API_KEY?.trim();
+  return configured || DEFAULT_PROXY_API_KEY;
+}
+
+export function clientAuthError(request: Request, env = process.env): Response | undefined {
+  const expected = resolveProxyApiKey(env);
   const bearer = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
   if ([request.headers.get('x-api-key'), bearer].some((provided) => provided === expected)) {
     return undefined;
   }
 
-  return anthropicErrorResponse(401, 'Invalid or missing API key.', 'authentication_error');
+  return anthropicErrorResponse(
+    401,
+    'Invalid or missing proxy API key. Use the same GROK_BUILD_API_KEY as x-api-key or Authorization: Bearer.',
+    'authentication_error',
+  );
 }
 
 export function upstreamToken(env = process.env): string | undefined {

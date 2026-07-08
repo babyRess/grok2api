@@ -9,10 +9,14 @@ import {
   accountGroupFromHeaders,
   accountKey,
   accountRetryLimit,
-  accountSummaries,
+  accountSummariesWithQuota,
   accountToken,
+  exportAccountPoolJson,
   type GrokAccount,
   type GrokAccountPool,
+  importAccountsToPoolFile,
+  importGrokCliAuthToPoolFile,
+  removeAccountFromPoolFile,
   requestRetryLimit,
   resolveAccountPool,
   saveAccountToPoolFile,
@@ -28,9 +32,11 @@ import {
   anthropicToolNamesFromRequest,
   clientAuthError,
   countAnthropicTokens,
+  DEFAULT_PROXY_API_KEY,
   grokResponsesHeaders,
   openAIChatCompletionToAnthropicMessages,
   openAIToolNamesFromRequest,
+  resolveProxyApiKey,
   responsesJsonToAnthropicMessage,
   responsesJsonToOpenAIChatCompletion,
   responsesStreamToAnthropicSse,
@@ -178,6 +184,22 @@ function loginPage() {
     .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .tag { border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%); border-radius: 6px; padding: 3px 7px; font-size: 12px; color: color-mix(in srgb, CanvasText 76%, Canvas 24%); }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .quota { display: grid; gap: 8px; }
+    .quota-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .quota-pct { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; line-height: 1; letter-spacing: 0; }
+    .quota-meta { font-size: 12px; color: color-mix(in srgb, CanvasText 68%, Canvas 32%); font-variant-numeric: tabular-nums; }
+    .progress-track {
+      width: 100%; height: 10px; border-radius: 6px; overflow: hidden;
+      border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%);
+      background: color-mix(in srgb, CanvasText 8%, Canvas 92%);
+    }
+    .progress-fill {
+      height: 100%; width: 0%; border-radius: 5px;
+      background: CanvasText; min-width: 0;
+    }
+    .progress-fill.mid { background: color-mix(in srgb, CanvasText 72%, Canvas 28%); }
+    .progress-fill.high { background: color-mix(in srgb, CanvasText 88%, #c44 12%); }
+    .progress-fill.critical { background: color-mix(in srgb, CanvasText 40%, #c44 60%); }
     @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -186,30 +208,69 @@ function loginPage() {
     <header>
       <div>
         <h1>Grok Build admin</h1>
-        <p>Manage account groups for the Anthropic-compatible gateway.</p>
+        <p>One proxy API key for all clients. OAuth only adds upstream Grok accounts.</p>
       </div>
-      <button id="refresh" type="button" class="secondary">Refresh accounts</button>
+      <div class="actions">
+        <button id="export-json" type="button" class="secondary">Export JSON</button>
+        <button id="import-cli" type="button" class="secondary">Import grok login</button>
+        <button id="refresh" type="button" class="secondary">Refresh accounts</button>
+      </div>
     </header>
+    <section>
+      <h2>Proxy</h2>
+      <p class="muted">Clients call this gateway with a single proxy API key (not your xAI token).</p>
+      <label>Proxy API key
+        <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="local-client-key">
+      </label>
+      <div class="actions">
+        <button id="show-key" type="button" class="secondary">Show / hide</button>
+        <button id="copy-key" type="button" class="secondary">Copy key</button>
+        <button id="copy-proxy" type="button" class="secondary">Copy client config</button>
+      </div>
+      <div id="proxy-meta" class="muted">Loading proxy settings...</div>
+      <label>Client config
+        <textarea id="proxy-config" readonly></textarea>
+      </label>
+    </section>
     <div class="grid">
       <section>
         <h2>Accounts</h2>
-        <div id="pool-meta" class="muted">Enter the local API key to load accounts.</div>
+        <div id="pool-meta" class="muted">Enter the proxy API key to load accounts and quota.</div>
         <div id="accounts" class="records"></div>
+        <div id="import-json-panel" class="hidden" style="display:grid;gap:14px">
+          <h2>Import JSON</h2>
+          <p class="muted">Paste an exported accounts file into the accounts pool.</p>
+          <label>Accounts JSON
+            <textarea id="import-json" placeholder='{"mode":"balanced","groups":[{"id":"default","accounts":[{"id":"...","access":"...","refresh":"..."}]}]}'></textarea>
+          </label>
+          <label>Import mode
+            <select id="import-mode" style="width:100%;box-sizing:border-box;border:1px solid color-mix(in srgb, CanvasText 24%, Canvas 76%);border-radius:6px;padding:10px 11px;font:inherit;background:Canvas;color:CanvasText;">
+              <option value="merge">Merge (update / add)</option>
+              <option value="replace">Replace all</option>
+            </select>
+          </label>
+          <div class="actions">
+            <button id="import-json-btn" type="button">Import JSON</button>
+            <label class="secondary" style="display:inline-flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);border-radius:6px;font-weight:650;cursor:pointer;">
+              Load file
+              <input id="import-file" type="file" accept="application/json,.json" class="hidden">
+            </label>
+          </div>
+        </div>
       </section>
       <section>
         <h2>Add account</h2>
         <form id="login-form">
-          <label>Local API key
-            <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="GROK_BUILD_API_KEY">
-          </label>
           <label>Account group
             <input id="group" name="group" autocomplete="off" placeholder="default" value="default">
           </label>
           <div class="actions">
-            <button id="start" type="submit">Create login session</button>
+            <button id="oauth" type="button">OAuth</button>
+            <button id="start" type="submit" class="secondary">Create login session</button>
             <button id="private" type="button" class="secondary" disabled>Open private login</button>
             <a id="normal" class="button secondary hidden" target="_blank" rel="noreferrer">Open login URL</a>
           </div>
+          <p class="muted">OAuth creates a session and opens auth.x.ai in a new tab. Finish authorization, then save the account.</p>
           <div id="status" class="status"></div>
         </form>
         <div id="result" class="hidden">
@@ -225,11 +286,22 @@ function loginPage() {
     </div>
   </main>
   <script>
+    const KEY_STORAGE = 'grok-build-proxy-api-key';
     const form = document.querySelector('#login-form');
     const status = document.querySelector('#status');
     const poolMeta = document.querySelector('#pool-meta');
+    const proxyMeta = document.querySelector('#proxy-meta');
+    const proxyConfig = document.querySelector('#proxy-config');
     const accounts = document.querySelector('#accounts');
     const refreshButton = document.querySelector('#refresh');
+    const exportJsonButton = document.querySelector('#export-json');
+    const importCliButton = document.querySelector('#import-cli');
+    const importJsonPanel = document.querySelector('#import-json-panel');
+    const importJsonArea = document.querySelector('#import-json');
+    const importModeSelect = document.querySelector('#import-mode');
+    const importJsonButton = document.querySelector('#import-json-btn');
+    const importFileInput = document.querySelector('#import-file');
+    const oauthButton = document.querySelector('#oauth');
     const privateButton = document.querySelector('#private');
     const normalLink = document.querySelector('#normal');
     const result = document.querySelector('#result');
@@ -237,39 +309,161 @@ function loginPage() {
     const copyButton = document.querySelector('#copy');
     const saveButton = document.querySelector('#save');
     const apiKeyInput = document.querySelector('#api-key');
+    const showKeyButton = document.querySelector('#show-key');
+    const copyKeyButton = document.querySelector('#copy-key');
+    const copyProxyButton = document.querySelector('#copy-proxy');
     const groupInput = document.querySelector('#group');
     let sessionId;
     let timer;
     let latestAccount;
+    let canLogout = false;
+
+    const proxyBaseUrl = () => new URL('/v1', window.location.origin).toString().replace(/\\/+$/, '');
 
     const headers = () => {
       const apiKey = apiKeyInput.value.trim();
-      return apiKey ? { 'content-type': 'application/json', 'x-api-key': apiKey } : { 'content-type': 'application/json' };
+      return apiKey
+        ? { 'content-type': 'application/json', 'x-api-key': apiKey }
+        : { 'content-type': 'application/json' };
     };
 
+    const renderProxyConfig = () => {
+      const apiKey = apiKeyInput.value.trim() || 'local-client-key';
+      proxyConfig.value = JSON.stringify({
+        baseURL: proxyBaseUrl(),
+        apiKey
+      }, null, 2);
+    };
+
+    const persistKey = () => {
+      const value = apiKeyInput.value.trim();
+      if (value) localStorage.setItem(KEY_STORAGE, value);
+      else localStorage.removeItem(KEY_STORAGE);
+      renderProxyConfig();
+    };
+
+    const escapeHtml = (value) => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+
     const renderAccounts = (payload) => {
+      const sourceLabel = payload.source === 'grok-cli'
+        ? 'Grok CLI login (~/.grok/auth.json)'
+        : payload.source === 'accounts-file'
+          ? 'accounts file'
+          : payload.source || 'none';
       poolMeta.textContent = payload.sourcePath
-        ? 'Source: ' + payload.sourcePath + ' · mode: ' + payload.mode
-        : 'No GROK_BUILD_ACCOUNTS_FILE is configured.';
+        ? 'Source: ' + sourceLabel + ' · ' + payload.sourcePath + ' · mode: ' + payload.mode
+        : 'Source: ' + sourceLabel + ' · mode: ' + payload.mode;
+      canLogout = !!payload.canLogout;
+      importCliButton.disabled = !payload.canImportCli;
+      exportJsonButton.disabled = !payload.canExportJson;
+      if (payload.canImportJson) {
+        importJsonPanel.classList.remove('hidden');
+        importJsonPanel.style.display = 'grid';
+        importJsonButton.disabled = false;
+        importFileInput.disabled = false;
+      } else {
+        importJsonPanel.classList.add('hidden');
+        importJsonPanel.style.display = 'none';
+        importJsonButton.disabled = true;
+        importFileInput.disabled = true;
+      }
       accounts.innerHTML = '';
       if (!payload.accounts?.length) {
-        accounts.innerHTML = '<div class="record muted">No accounts saved yet.</div>';
+        accounts.innerHTML = '<div class="record muted">No accounts yet. Click <strong>OAuth</strong>, import <code>grok login</code>, or create a browser login session.</div>';
         return;
       }
+      const quotaTone = (percent) => {
+        if (percent >= 90) return 'critical';
+        if (percent >= 75) return 'high';
+        if (percent >= 50) return 'mid';
+        return '';
+      };
+
+      const quotaBar = (bar, error) => {
+        if (!bar) {
+          return error
+            ? '<div class="quota-meta">' + escapeHtml(error) + '</div>'
+            : '';
+        }
+        const percent = Math.max(0, Math.min(100, Number(bar.percentUsed) || 0));
+        const barWidth = Math.max(percent < 1 && percent > 0 ? 1 : 0, Math.min(100, percent));
+        const tone = quotaTone(percent);
+        const label = bar.label || (bar.period === 'weekly' ? 'Weekly SuperGrok Limit' : 'Monthly credits');
+        const detail = bar.period === 'weekly'
+          ? (bar.productUsage || []).map((p) => p.product + ' ' + p.usagePercent + '%').join(' · ') ||
+            percent + '% of weekly SuperGrok pool'
+          : (bar.used != null && bar.limit != null
+              ? bar.used.toLocaleString() + ' / ' + bar.limit.toLocaleString() +
+                ' credits · ' + (bar.remaining != null ? bar.remaining.toLocaleString() + ' left' : '')
+              : percent + '% used');
+        return (
+          '<div class="quota" role="group" aria-label="' + escapeHtml(label) + '">' +
+            '<div class="quota-head">' +
+              '<span class="quota-pct">' + percent + '% <span class="quota-meta" style="font-weight:650;font-size:12px">used</span></span>' +
+              '<span class="quota-meta">' + escapeHtml(label) + '</span>' +
+            '</div>' +
+            '<div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '" aria-label="' + escapeHtml(label) + ' ' + percent + ' percent used">' +
+              '<div class="progress-fill' + (tone ? ' ' + tone : '') + '" style="width:' + barWidth + '%"></div>' +
+            '</div>' +
+            '<div class="quota-meta">' + escapeHtml(detail) + '</div>' +
+            '<div class="quota-meta">Resets ' + new Date(bar.billingPeriodEnd).toLocaleString() + '</div>' +
+          '</div>'
+        );
+      };
+
+      const quotaBlock = (account) => {
+        if (!account.quota && !account.quotaError) {
+          return '<div class="quota-meta">quota not checked</div>';
+        }
+        if (!account.quota) {
+          return '<div class="quota-meta">quota unavailable: ' + escapeHtml(account.quotaError) + '</div>';
+        }
+        return (
+          '<div style="display:grid;gap:12px">' +
+            quotaBar(account.quota.weekly, account.quota.weeklyError ? 'weekly: ' + account.quota.weeklyError : '') +
+            quotaBar(account.quota.monthly, account.quota.monthlyError ? 'monthly: ' + account.quota.monthlyError : '') +
+          '</div>'
+        );
+      };
+
       for (const account of payload.accounts) {
         const record = document.createElement('div');
         record.className = 'record';
         const expires = account.expires ? new Date(account.expires).toLocaleString() : 'no expiry';
         record.innerHTML =
-          '<div class="row"><h3>' + account.id + '</h3><span class="tag">' + account.group + '</span></div>' +
+          '<div class="row"><h3>' + escapeHtml(account.id) + '</h3><span class="tag">' + escapeHtml(account.group) + '</span></div>' +
           '<div class="row muted"><span>priority ' + account.priority + '</span><span>' + expires + '</span></div>' +
-          '<div class="row"><span class="tag">' + (account.hasAccess ? 'access' : 'no access') + '</span><span class="tag">' + (account.hasRefresh ? 'refresh' : 'no refresh') + '</span></div>';
+          quotaBlock(account) +
+          '<div class="row"><span class="tag">' + (account.hasAccess ? 'access' : 'no access') + '</span><span class="tag">' + (account.hasRefresh ? 'refresh' : 'no refresh') + '</span>' +
+          (canLogout ? '<button type="button" class="secondary logout" data-id="' + escapeHtml(account.id) + '" data-group="' + escapeHtml(account.group) + '">Log out</button>' : '') +
+          '</div>';
         accounts.appendChild(record);
+      }
+      for (const button of accounts.querySelectorAll('button.logout')) {
+        button.addEventListener('click', async () => {
+          status.textContent = 'Logging out account...';
+          const response = await fetch('/auth/grok-build/accounts', {
+            method: 'DELETE',
+            headers: headers(),
+            body: JSON.stringify({ id: button.dataset.id, group: button.dataset.group })
+          });
+          const body = await response.json();
+          if (!response.ok) {
+            status.textContent = body.error?.message || 'Could not log out account.';
+            return;
+          }
+          status.textContent = 'Account logged out.';
+          renderAccounts(body);
+        });
       }
     };
 
     const loadAccounts = async () => {
-      poolMeta.textContent = 'Loading accounts...';
+      poolMeta.textContent = 'Loading accounts and quota...';
       const response = await fetch('/auth/grok-build/accounts', { headers: headers() });
       const payload = await response.json();
       if (!response.ok) {
@@ -290,7 +484,7 @@ function loginPage() {
       }
       clearInterval(timer);
       if (payload.status === 'success') {
-        status.textContent = 'Credential received.';
+        status.textContent = 'OAuth complete. Credential received.';
         latestAccount = payload.account;
         accountJson.value = JSON.stringify(payload.account, null, 2);
         result.classList.remove('hidden');
@@ -299,10 +493,11 @@ function loginPage() {
       status.textContent = payload.error || 'Login failed.';
     };
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
+    const startLoginSession = async (openMode) => {
       clearInterval(timer);
       result.classList.add('hidden');
+      latestAccount = undefined;
+      oauthButton.disabled = true;
       status.textContent = 'Creating OAuth session...';
       const response = await fetch('/auth/grok-build/sessions', {
         method: 'POST',
@@ -310,16 +505,35 @@ function loginPage() {
         body: JSON.stringify({ group: groupInput.value.trim() || 'default' })
       });
       const payload = await response.json();
+      oauthButton.disabled = false;
       if (!response.ok) {
-        status.textContent = payload.error?.message || 'Could not create login session.';
+        status.textContent = payload.error?.message || 'Could not create OAuth session.';
         return;
       }
       sessionId = payload.id;
       normalLink.href = payload.url;
       normalLink.classList.remove('hidden');
       privateButton.disabled = false;
-      status.textContent = 'Open the login URL, then finish xAI authorization.';
       timer = setInterval(poll, 1500);
+
+      if (openMode === 'tab') {
+        const opened = window.open(payload.url, '_blank', 'noopener,noreferrer');
+        status.textContent = opened
+          ? 'OAuth tab opened. Finish xAI authorization, then return here.'
+          : 'Popup blocked. Use Open login URL, then finish xAI authorization.';
+        return;
+      }
+
+      status.textContent = 'OAuth session ready. Open the login URL or private login, then finish xAI authorization.';
+    };
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await startLoginSession('manual');
+    });
+
+    oauthButton.addEventListener('click', async () => {
+      await startLoginSession('tab');
     });
 
     privateButton.addEventListener('click', async () => {
@@ -330,6 +544,77 @@ function loginPage() {
         headers: headers()
       });
       await poll();
+    });
+
+    importCliButton.addEventListener('click', async () => {
+      status.textContent = 'Importing credentials from grok login...';
+      const response = await fetch('/auth/grok-build/import-cli', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ group: groupInput.value.trim() || 'default' })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        status.textContent = payload.error?.message || 'Could not import grok login.';
+        return;
+      }
+      status.textContent = 'Imported grok login credentials.';
+      renderAccounts(payload);
+    });
+
+    exportJsonButton.addEventListener('click', async () => {
+      status.textContent = 'Exporting accounts JSON...';
+      const response = await fetch('/auth/grok-build/accounts/export', { headers: headers() });
+      const text = await response.text();
+      if (!response.ok) {
+        let message = 'Could not export accounts.';
+        try { message = JSON.parse(text).error?.message || message; } catch {}
+        status.textContent = message;
+        return;
+      }
+      const blob = new Blob([text], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'grok-accounts.json';
+      link.click();
+      URL.revokeObjectURL(url);
+      importJsonArea.value = text;
+      status.textContent = 'Exported accounts JSON (download started).';
+    });
+
+    importFileInput.addEventListener('change', async () => {
+      const file = importFileInput.files?.[0];
+      if (!file) return;
+      importJsonArea.value = await file.text();
+      status.textContent = 'Loaded ' + file.name + '. Click Import JSON to apply.';
+      importFileInput.value = '';
+    });
+
+    importJsonButton.addEventListener('click', async () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(importJsonArea.value);
+      } catch {
+        status.textContent = 'Import JSON is not valid JSON.';
+        return;
+      }
+      status.textContent = 'Importing accounts JSON...';
+      const response = await fetch('/auth/grok-build/accounts/import', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          importMode: importModeSelect.value === 'replace' ? 'replace' : 'merge',
+          data: parsed
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        status.textContent = payload.error?.message || 'Could not import accounts JSON.';
+        return;
+      }
+      status.textContent = 'Imported accounts JSON (' + importModeSelect.value + ').';
+      renderAccounts(payload);
     });
 
     copyButton.addEventListener('click', async () => {
@@ -354,9 +639,52 @@ function loginPage() {
       renderAccounts(payload);
     });
 
+    showKeyButton.addEventListener('click', () => {
+      apiKeyInput.type = apiKeyInput.type === 'password' ? 'text' : 'password';
+    });
+
+    copyKeyButton.addEventListener('click', async () => {
+      const value = apiKeyInput.value.trim();
+      if (!value) {
+        status.textContent = 'Enter the proxy API key first.';
+        return;
+      }
+      await navigator.clipboard.writeText(value);
+      status.textContent = 'Proxy API key copied.';
+    });
+
+    copyProxyButton.addEventListener('click', async () => {
+      renderProxyConfig();
+      await navigator.clipboard.writeText(proxyConfig.value);
+      status.textContent = 'Client proxy config copied.';
+    });
+
     refreshButton.addEventListener('click', loadAccounts);
-    apiKeyInput.addEventListener('change', loadAccounts);
-    void loadAccounts();
+    apiKeyInput.addEventListener('change', () => {
+      persistKey();
+      void loadAccounts();
+    });
+    apiKeyInput.addEventListener('input', persistKey);
+
+    const savedKey = localStorage.getItem(KEY_STORAGE);
+    apiKeyInput.value = savedKey || 'local-client-key';
+    persistKey();
+    void (async () => {
+      const response = await fetch('/auth/grok-build/proxy');
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) {
+        proxyMeta.textContent = payload.usingDefaultKey
+          ? 'Using default proxy API key: local-client-key (set GROK_BUILD_API_KEY to override).'
+          : 'Custom proxy API key is configured on the server. Enter the same key here and for all clients.';
+        if (payload.usingDefaultKey && payload.defaultApiKey && !savedKey) {
+          apiKeyInput.value = payload.defaultApiKey;
+          persistKey();
+        }
+      } else {
+        proxyMeta.textContent = 'Could not load proxy settings.';
+      }
+      await loadAccounts();
+    })();
   </script>
 </body>
 </html>`,
@@ -390,14 +718,64 @@ function loginSessionJson(session: LoginSession) {
   });
 }
 
-function accountPoolJson(env: AnthropicApiEnvironment) {
+async function accountPoolPayload(env: AnthropicApiEnvironment) {
   const pool = resolveAccountPool(env);
-  return Response.json({
+  return {
     mode: pool.mode,
+    source: pool.source ?? null,
     sourcePath: pool.sourcePath ?? null,
-    writable: !!pool.sourcePath,
-    accounts: accountSummaries(pool),
+    writable: pool.source === 'accounts-file' && !!pool.sourcePath,
+    canImportCli: pool.source === 'accounts-file' && !!pool.sourcePath,
+    canImportJson: pool.source === 'accounts-file' && !!pool.sourcePath,
+    canExportJson: pool.accounts.length > 0,
+    canLogout: pool.source === 'accounts-file' || pool.source === 'grok-cli',
+    accounts: await accountSummariesWithQuota(pool),
+  };
+}
+
+async function accountPoolJson(env: AnthropicApiEnvironment) {
+  return Response.json(await accountPoolPayload(env));
+}
+
+function exportAccountsJson(env: AnthropicApiEnvironment) {
+  const pool = resolveAccountPool(env);
+  if (pool.accounts.length === 0) {
+    throw new AnthropicApiError(404, 'invalid_request_error', 'No accounts to export.');
+  }
+  const payload = exportAccountPoolJson(pool);
+  return new Response(`${JSON.stringify(payload, null, 2)}\n`, {
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="grok-accounts-${new Date().toISOString().slice(0, 10)}.json"`,
+    },
   });
+}
+
+async function importAccountsJson(request: Request, env: AnthropicApiEnvironment) {
+  const body = await requestJson(request);
+  if (!isRecord(body) && !Array.isArray(body)) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      'Import body must be JSON accounts or a pool object.',
+    );
+  }
+
+  const importMode =
+    isRecord(body) && body.importMode === 'replace' ? ('replace' as const) : ('merge' as const);
+  const source =
+    isRecord(body) && (isRecord(body.data) || Array.isArray(body.data)) ? body.data : body;
+
+  try {
+    importAccountsToPoolFile(env, source, { mode: importMode });
+  } catch (cause) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+  return Response.json(await accountPoolPayload(env));
 }
 
 function accountFromAdminPayload(value: unknown): GrokAccount {
@@ -431,13 +809,47 @@ function accountFromAdminPayload(value: unknown): GrokAccount {
 }
 
 async function saveAdminAccount(request: Request, env: AnthropicApiEnvironment) {
-  const pool = saveAccountToPoolFile(env, accountFromAdminPayload(await requestJson(request)));
-  return Response.json({
-    mode: pool.mode,
-    sourcePath: pool.sourcePath ?? null,
-    writable: !!pool.sourcePath,
-    accounts: accountSummaries(pool),
-  });
+  saveAccountToPoolFile(env, accountFromAdminPayload(await requestJson(request)));
+  return Response.json(await accountPoolPayload(env));
+}
+
+async function removeAdminAccount(request: Request, env: AnthropicApiEnvironment) {
+  const body = await requestJson(request);
+  const payload = isRecord(body) && isRecord(body.account) ? body.account : body;
+  if (!isRecord(payload) || !textField(payload.id)) {
+    throw new AnthropicApiError(400, 'invalid_request_error', '`id` is required to log out.');
+  }
+  try {
+    removeAccountFromPoolFile(env, {
+      id: textField(payload.id) ?? '',
+      group: textField(payload.group),
+    });
+  } catch (cause) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+  return Response.json(await accountPoolPayload(env));
+}
+
+async function importCliAuthAccount(request: Request, env: AnthropicApiEnvironment) {
+  const body = await requestJson(request);
+  const group =
+    isRecord(body) && typeof body.group === 'string' && body.group.trim()
+      ? body.group.trim()
+      : 'default';
+  try {
+    importGrokCliAuthToPoolFile(env, group);
+  } catch (cause) {
+    throw new AnthropicApiError(
+      400,
+      'invalid_request_error',
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+  return Response.json(await accountPoolPayload(env));
 }
 
 async function createLoginSession(request: Request) {
@@ -715,7 +1127,7 @@ async function handleMessages(request: Request, options: AnthropicApiHandlerOpti
   if (pool.accounts.length === 0) {
     return anthropicErrorResponse(
       401,
-      'GROK_BUILD_OAUTH_TOKEN, GROK_BUILD_ACCESS_TOKEN, GROK_BUILD_ACCOUNTS, or GROK_BUILD_ACCOUNTS_FILE is required for /messages.',
+      'No Grok credentials configured. Run `grok login`, set GROK_BUILD_ACCOUNTS_FILE, or open /auth/grok-build/login.',
       'authentication_error',
     );
   }
@@ -740,7 +1152,7 @@ async function handleChatCompletions(request: Request, options: AnthropicApiHand
   if (pool.accounts.length === 0) {
     return anthropicErrorResponse(
       401,
-      'GROK_BUILD_OAUTH_TOKEN, GROK_BUILD_ACCESS_TOKEN, GROK_BUILD_ACCOUNTS, or GROK_BUILD_ACCOUNTS_FILE is required for /chat/completions.',
+      'No Grok credentials configured. Run `grok login`, set GROK_BUILD_ACCOUNTS_FILE, or open /auth/grok-build/login.',
       'authentication_error',
     );
   }
@@ -772,11 +1184,33 @@ export async function handleAnthropicApiRequest(
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
     if (request.method === 'GET' && pathname === '/health') {
-      return Response.json({ ok: true, type: 'open-grok-build-anthropic-api' });
+      return Response.json({
+        ok: true,
+        type: 'open-grok-build-anthropic-api',
+        proxy: {
+          basePath: '/v1',
+          auth: 'api_key',
+          header: 'x-api-key or Authorization: Bearer',
+        },
+      });
     }
 
     if (request.method === 'GET' && pathname === '/auth/grok-build/login') {
       return loginPage();
+    }
+
+    if (request.method === 'GET' && pathname === '/auth/grok-build/proxy') {
+      const env = options.env ?? process.env;
+      const key = resolveProxyApiKey(env);
+      return Response.json({
+        basePath: '/v1',
+        // Only reveal whether the default key is active — never echo custom secrets.
+        apiKeyRequired: true,
+        usingDefaultKey: key === DEFAULT_PROXY_API_KEY,
+        defaultApiKey: key === DEFAULT_PROXY_API_KEY ? DEFAULT_PROXY_API_KEY : null,
+        header: 'x-api-key',
+        bearer: true,
+      });
     }
 
     const authError = clientAuthError(request, options.env ?? process.env);
@@ -788,6 +1222,22 @@ export async function handleAnthropicApiRequest(
 
     if (request.method === 'POST' && pathname === '/auth/grok-build/accounts') {
       return saveAdminAccount(request, options.env ?? process.env);
+    }
+
+    if (request.method === 'DELETE' && pathname === '/auth/grok-build/accounts') {
+      return removeAdminAccount(request, options.env ?? process.env);
+    }
+
+    if (request.method === 'POST' && pathname === '/auth/grok-build/import-cli') {
+      return importCliAuthAccount(request, options.env ?? process.env);
+    }
+
+    if (request.method === 'GET' && pathname === '/auth/grok-build/accounts/export') {
+      return exportAccountsJson(options.env ?? process.env);
+    }
+
+    if (request.method === 'POST' && pathname === '/auth/grok-build/accounts/import') {
+      return importAccountsJson(request, options.env ?? process.env);
     }
 
     if (request.method === 'POST' && pathname === '/auth/grok-build/sessions') {

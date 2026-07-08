@@ -13,14 +13,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const DEFAULT_PROXY_KEY = 'local-client-key';
+
 function jsonRequest(path: string, body: unknown, headers?: HeadersInit) {
   return new Request(`http://127.0.0.1:8990${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      'x-api-key': DEFAULT_PROXY_KEY,
       ...headers,
     },
     body: JSON.stringify(body),
+  });
+}
+
+function proxyGet(path: string, headers?: HeadersInit) {
+  return new Request(`http://127.0.0.1:8990${path}`, {
+    headers: { 'x-api-key': DEFAULT_PROXY_KEY, ...headers },
   });
 }
 
@@ -100,7 +109,7 @@ describe('Anthropic API handler', () => {
     expect(allowed.status).toBe(200);
   });
 
-  it('accepts bearer client auth and allows local requests when no API key is configured', async () => {
+  it('accepts bearer client auth and always requires the single proxy API key', async () => {
     const bearer = await handleAnthropicApiRequest(
       new Request('http://local/v1/models', {
         headers: { authorization: 'Bearer local-key' },
@@ -109,10 +118,32 @@ describe('Anthropic API handler', () => {
     );
     expect(bearer.status).toBe(200);
 
-    const local = await handleAnthropicApiRequest(new Request('http://local/v1/models'), {
+    const missing = await handleAnthropicApiRequest(new Request('http://local/v1/models'), {
       env: {},
     });
-    expect(local.status).toBe(200);
+    expect(missing.status).toBe(401);
+
+    const defaultKey = await handleAnthropicApiRequest(
+      new Request('http://local/v1/models', {
+        headers: { 'x-api-key': DEFAULT_PROXY_KEY },
+      }),
+      { env: {} },
+    );
+    expect(defaultKey.status).toBe(200);
+  });
+
+  it('exposes proxy key metadata without requiring auth', async () => {
+    const response = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/proxy'),
+      { env: {} },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      basePath: '/v1',
+      apiKeyRequired: true,
+      usingDefaultKey: true,
+      defaultApiKey: DEFAULT_PROXY_KEY,
+    });
   });
 
   it('allows bearer client auth when x-api-key is present but does not match', async () => {
@@ -127,9 +158,7 @@ describe('Anthropic API handler', () => {
   });
 
   it('serves models and count_tokens without an upstream token', async () => {
-    const models = await handleAnthropicApiRequest(new Request('http://local/v1/models'), {
-      env: {},
-    });
+    const models = await handleAnthropicApiRequest(proxyGet('/v1/models'), { env: {} });
     const modelsPayload = (await models.json()) as Record<string, unknown>;
     expect(modelsPayload.has_more).toBe(false);
     expect((modelsPayload.data as Record<string, unknown>[])[0]).toMatchObject({
@@ -156,7 +185,7 @@ describe('Anthropic API handler', () => {
         model: 'grok-build',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
-      { env: {} },
+      { env: { GROK_BUILD_DISABLE_CLI_AUTH: '1' } },
     );
 
     expect(response.status).toBe(401);
@@ -164,7 +193,7 @@ describe('Anthropic API handler', () => {
       type: 'error',
       error: {
         type: 'authentication_error',
-        message: expect.stringContaining('GROK_BUILD_OAUTH_TOKEN'),
+        message: expect.stringContaining('grok login'),
       },
     });
   });
@@ -208,6 +237,7 @@ describe('Anthropic API handler', () => {
       }),
       {
         env: {
+          GROK_BUILD_DISABLE_CLI_AUTH: '1',
           GROK_BUILD_WEB_SEARCH_ENDPOINT: 'https://search.example/api',
           GROK_BUILD_WEB_SEARCH_API_KEY: 'search-key',
         },
@@ -331,7 +361,10 @@ describe('Anthropic API handler', () => {
         tools: [{ name: 'WebSearch' }],
       }),
       {
-        env: { GROK_BUILD_WEB_SEARCH_ENDPOINT: 'https://search.example/api' },
+        env: {
+          GROK_BUILD_DISABLE_CLI_AUTH: '1',
+          GROK_BUILD_WEB_SEARCH_ENDPOINT: 'https://search.example/api',
+        },
         fetch: fetchMock,
       },
     );
@@ -613,7 +646,15 @@ describe('Anthropic API handler', () => {
       { env: { GROK_BUILD_API_KEY: 'local-key' } },
     );
     expect(login.status).toBe(200);
-    await expect(login.text()).resolves.toContain('Grok Build admin');
+    const loginHtml = await login.text();
+    expect(loginHtml).toContain('Grok Build admin');
+    expect(loginHtml).toContain('>OAuth</button>');
+    expect(loginHtml).toContain('Proxy API key');
+    expect(loginHtml).toContain('progress-track');
+    expect(loginHtml).toContain('quota-pct');
+    expect(loginHtml).toContain('Export JSON');
+    expect(loginHtml).toContain('import-json-panel');
+    expect(loginHtml).toContain('Import JSON');
 
     const blocked = await handleAnthropicApiRequest(
       new Request('http://local/auth/grok-build/sessions', {
@@ -634,46 +675,212 @@ describe('Anthropic API handler', () => {
       GROK_BUILD_API_KEY: 'local-key',
       GROK_BUILD_ACCOUNTS_FILE: join(dir, 'accounts.json'),
     };
-
-    const empty = await handleAnthropicApiRequest(
-      new Request('http://local/auth/grok-build/accounts', {
-        headers: { 'x-api-key': 'local-key' },
-      }),
-      { env },
-    );
-    await expect(empty.json()).resolves.toMatchObject({
-      writable: true,
-      accounts: [],
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes('format=credits')) {
+        return Response.json({
+          config: {
+            currentPeriod: {
+              type: 'USAGE_PERIOD_TYPE_WEEKLY',
+              start: '2026-07-06T02:01:23.459473+00:00',
+              end: '2026-07-13T02:01:23.459473+00:00',
+            },
+            creditUsagePercent: 3,
+            productUsage: [{ product: 'GrokBuild', usagePercent: 3 }],
+            billingPeriodStart: '2026-07-06T02:01:23.459473+00:00',
+            billingPeriodEnd: '2026-07-13T02:01:23.459473+00:00',
+          },
+        });
+      }
+      return Response.json({
+        config: {
+          monthlyLimit: { val: 4000 },
+          used: { val: 500 },
+          billingPeriodEnd: '2026-08-01T00:00:00+00:00',
+        },
+      });
     });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock;
 
-    const saved = await handleAnthropicApiRequest(
-      new Request('http://local/auth/grok-build/accounts', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
-        body: JSON.stringify({
-          account: {
+    try {
+      const empty = await handleAnthropicApiRequest(
+        new Request('http://local/auth/grok-build/accounts', {
+          headers: { 'x-api-key': 'local-key' },
+        }),
+        { env },
+      );
+      await expect(empty.json()).resolves.toMatchObject({
+        writable: true,
+        source: 'accounts-file',
+        accounts: [],
+      });
+
+      const saved = await handleAnthropicApiRequest(
+        new Request('http://local/auth/grok-build/accounts', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
+          body: JSON.stringify({
+            account: {
+              id: 'admin-added',
+              group: 'default',
+              access: 'access-token',
+              refresh: 'refresh-token',
+            },
+          }),
+        }),
+        { env },
+      );
+
+      expect(saved.status).toBe(200);
+      await expect(saved.json()).resolves.toMatchObject({
+        accounts: [
+          {
             id: 'admin-added',
             group: 'default',
-            access: 'access-token',
-            refresh: 'refresh-token',
+            hasAccess: true,
+            hasRefresh: true,
+            quota: {
+              weekly: {
+                period: 'weekly',
+                label: 'Weekly SuperGrok Limit',
+                percentUsed: 3,
+              },
+              monthly: {
+                period: 'monthly',
+                label: 'Monthly credits',
+                used: 500,
+                limit: 4000,
+                remaining: 3500,
+                percentUsed: 13,
+              },
+            },
           },
+        ],
+      });
+      expect(readFileSync(join(dir, 'accounts.json'), 'utf8')).toContain('admin-added');
+      expect(fetchMock).toHaveBeenCalled();
+
+      const removed = await handleAnthropicApiRequest(
+        new Request('http://local/auth/grok-build/accounts', {
+          method: 'DELETE',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
+          body: JSON.stringify({ id: 'admin-added', group: 'default' }),
         }),
+        { env },
+      );
+      expect(removed.status).toBe(200);
+      await expect(removed.json()).resolves.toMatchObject({ accounts: [] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('exports and imports accounts JSON through the admin API', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grok-server-export-'));
+    tempDirs.push(dir);
+    writeFileSync(
+      join(dir, 'accounts.json'),
+      JSON.stringify({
+        mode: 'balanced',
+        groups: [
+          {
+            id: 'default',
+            accounts: [{ id: 'seed', access: 'seed-access', refresh: 'seed-refresh' }],
+          },
+        ],
+      }),
+    );
+    const env = {
+      GROK_BUILD_API_KEY: 'local-key',
+      GROK_BUILD_ACCOUNTS_FILE: join(dir, 'accounts.json'),
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        config: {
+          monthlyLimit: { val: 100 },
+          used: { val: 1 },
+          billingPeriodEnd: '2026-08-01T00:00:00+00:00',
+        },
+      }),
+    );
+
+    try {
+      const exported = await handleAnthropicApiRequest(
+        new Request('http://local/auth/grok-build/accounts/export', {
+          headers: { 'x-api-key': 'local-key' },
+        }),
+        { env },
+      );
+      expect(exported.status).toBe(200);
+      const exportText = await exported.text();
+      expect(exportText).toContain('seed-access');
+      expect(exported.headers.get('content-disposition')).toContain('grok-accounts-');
+
+      const imported = await handleAnthropicApiRequest(
+        new Request('http://local/auth/grok-build/accounts/import', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
+          body: JSON.stringify({
+            importMode: 'merge',
+            data: {
+              groups: [
+                {
+                  id: 'default',
+                  accounts: [{ id: 'imported', access: 'imported-access' }],
+                },
+              ],
+            },
+          }),
+        }),
+        { env },
+      );
+      expect(imported.status).toBe(200);
+      await expect(imported.json()).resolves.toMatchObject({
+        accounts: expect.arrayContaining([
+          expect.objectContaining({ id: 'seed' }),
+          expect.objectContaining({ id: 'imported' }),
+        ]),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('imports grok login credentials through the admin API', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grok-server-import-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'accounts.json'), '{"mode":"balanced","groups":[]}');
+    writeFileSync(
+      join(dir, 'auth.json'),
+      JSON.stringify({
+        'https://auth.x.ai::client': {
+          key: 'cli-access',
+          refresh_token: 'cli-refresh',
+          email: 'cli@example.com',
+        },
+      }),
+    );
+    const env = {
+      GROK_BUILD_API_KEY: 'local-key',
+      GROK_BUILD_ACCOUNTS_FILE: join(dir, 'accounts.json'),
+      GROK_AUTH_FILE: join(dir, 'auth.json'),
+    };
+
+    const imported = await handleAnthropicApiRequest(
+      new Request('http://local/auth/grok-build/import-cli', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'local-key' },
+        body: JSON.stringify({ group: 'default' }),
       }),
       { env },
     );
 
-    expect(saved.status).toBe(200);
-    await expect(saved.json()).resolves.toMatchObject({
-      accounts: [
-        {
-          id: 'admin-added',
-          group: 'default',
-          hasAccess: true,
-          hasRefresh: true,
-        },
-      ],
+    expect(imported.status).toBe(200);
+    await expect(imported.json()).resolves.toMatchObject({
+      accounts: [{ id: 'cli@example.com', group: 'default', hasAccess: true, hasRefresh: true }],
     });
-    expect(readFileSync(join(dir, 'accounts.json'), 'utf8')).toContain('admin-added');
   });
 
   it('converts streaming text and tool call Responses events to Anthropic SSE', async () => {

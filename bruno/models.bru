@@ -1,0 +1,20 @@
+meta {
+  name: List models
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/models
+  body: none
+  auth: none
+}
+
+headers {
+  x-api-key: {{apiKey}}
+}
+
+docs {
+  # List models
+  Anthropic-style model catalog from the proxy.
+}

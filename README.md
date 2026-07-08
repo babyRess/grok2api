@@ -13,7 +13,9 @@ rotate traffic across multiple Grok Build accounts.
   response formats, and session cache keys
 - Account groups with `balanced` round-robin or `priority` failover
 - Per-account retry and per-request retry limits
+- Grok CLI login (`grok login` / `~/.grok/auth.json`) for gateway auth
 - Browser login helper page to create account JSON entries
+- Admin logout and import-from-CLI-login actions
 - Server-side Claude Code `web_search` / `WebSearch` handling
 - Optional local client API key protection
 
@@ -28,6 +30,39 @@ bun run api
 
 The server listens on `http://127.0.0.1:8990` by default. Override with
 `GROK_BUILD_API_HOST` and `GROK_BUILD_API_PORT`.
+
+## Authenticate (Grok CLI login)
+
+The gateway reuses credentials from the official Grok CLI when no account pool
+or static token is configured:
+
+```bash
+grok login
+bun run api
+```
+
+Tokens are read from `~/.grok/auth.json` (override with `GROK_AUTH_FILE` or
+`GROK_BUILD_CLI_AUTH_FILE`). Refreshed tokens are written back to that file.
+Disable this fallback with `GROK_BUILD_DISABLE_CLI_AUTH=1`.
+
+You can also import a CLI login into `GROK_BUILD_ACCOUNTS_FILE` from the admin
+UI (**Import grok login**) or:
+
+```bash
+curl -s http://127.0.0.1:8990/auth/grok-build/import-cli \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -d '{"group":"default"}'
+```
+
+Log out / remove an account:
+
+```bash
+curl -s -X DELETE http://127.0.0.1:8990/auth/grok-build/accounts \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: local-client-key' \
+  -d '{"id":"user@example.com","group":"default"}'
+```
 
 ## Single Account
 
@@ -54,8 +89,9 @@ Clients call the Anthropic base URL:
 }
 ```
 
-Client auth accepts either `x-api-key` or `Authorization: Bearer ...` when
-`GROK_BUILD_API_KEY` is set.
+**One proxy API key** protects the gateway. Clients and the admin UI use the
+same key via `x-api-key` or `Authorization: Bearer ...`. Default is
+`local-client-key` when `GROK_BUILD_API_KEY` is unset.
 
 ## Account Groups
 
@@ -152,8 +188,8 @@ The private-login button attempts to launch Chrome Incognito on macOS and Linux.
 If your browser blocks that or Chrome is unavailable, use the normal login URL
 manually in a private window.
 
-When `GROK_BUILD_API_KEY` is set, the page asks for it before creating or polling
-login sessions.
+The admin page uses the same single proxy API key for all management calls.
+Default key is `local-client-key` (override with `GROK_BUILD_API_KEY`).
 
 ## WebSearch
 
@@ -231,8 +267,12 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `/cc/v1/messages/count_tokens` | POST | Claude Code alias for token estimate |
 | `/v1/chat/completions` | POST | OpenAI-compatible chat completions |
 | `/auth/grok-build/login` | GET | Browser admin for account login and saving |
-| `/auth/grok-build/accounts` | GET | List redacted account summaries |
+| `/auth/grok-build/accounts` | GET | List redacted account summaries with quota |
 | `/auth/grok-build/accounts` | POST | Save an account into the account file |
+| `/auth/grok-build/accounts` | DELETE | Log out / remove an account |
+| `/auth/grok-build/accounts/export` | GET | Export full accounts JSON (includes tokens) |
+| `/auth/grok-build/accounts/import` | POST | Import accounts JSON (`merge` or `replace`) |
+| `/auth/grok-build/import-cli` | POST | Import credentials from `grok login` |
 | `/auth/grok-build/sessions` | POST | Create an OAuth login session |
 | `/auth/grok-build/sessions/<id>` | GET | Poll an OAuth login session |
 
@@ -245,6 +285,8 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `GROK_BUILD_IMAGE_MODEL` | `grok-build` | Fallback model when upstream rejects image input for the requested model |
 | `GROK_BUILD_OAUTH_TOKEN` | none | Legacy single static upstream token |
 | `GROK_BUILD_ACCESS_TOKEN` | none | Legacy single static upstream token alias |
+| `GROK_AUTH_FILE` / `GROK_BUILD_CLI_AUTH_FILE` | `~/.grok/auth.json` | Grok CLI login credentials |
+| `GROK_BUILD_DISABLE_CLI_AUTH` | unset | Set `1`/`true` to ignore Grok CLI auth |
 | `GROK_BUILD_ACCOUNTS` | none | Inline account pool JSON |
 | `GROK_BUILD_ACCOUNTS_FILE` | none | Account pool JSON file |
 | `GROK_BUILD_ACCOUNT_GROUP` | none | Default account group |
@@ -252,7 +294,7 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `GROK_BUILD_LOAD_BALANCING_MODE` | none | Alias for rotation mode |
 | `GROK_BUILD_ACCOUNT_RETRIES` | `3` | Max attempts per account |
 | `GROK_BUILD_ACCOUNT_REQUEST_RETRIES` | `9` | Max upstream attempts per request |
-| `GROK_BUILD_API_KEY` | none | Optional local client API key |
+| `GROK_BUILD_API_KEY` | `local-client-key` | Single proxy API key for clients + admin UI |
 | `GROK_BUILD_API_HOST` | `127.0.0.1` | Local API host |
 | `GROK_BUILD_API_PORT` | `8990` | Local API port |
 | `GROK_BUILD_OAUTH_CLIENT_ID` | built-in | OAuth client ID override |
@@ -355,6 +397,38 @@ into `data/accounts.json` under the group you want, then restart:
 ```bash
 docker compose restart open-grok-build
 ```
+
+## Bruno (API tests)
+
+Open the `bruno/` collection in [Bruno](https://www.usebruno.com/) and select the
+`local` environment (`baseUrl=http://127.0.0.1:8990`, `apiKey=local-client-key`).
+
+Included requests:
+
+- Health / proxy meta
+- List models
+- Accounts + quota
+- Anthropic messages (json + stream)
+- OpenAI chat completions
+- Count tokens
+
+## Benchmark (tokens/s)
+
+With the proxy running:
+
+```bash
+bun run api
+bun run bench
+```
+
+Options:
+
+```bash
+bun scripts/benchmark-tokens.ts --runs 5 --model grok-build --max-tokens 512
+```
+
+Stream tok/s is measured from first content token to stream end. JSON tok/s is
+end-to-end wall time (includes queue + reasoning).
 
 ## Development
 

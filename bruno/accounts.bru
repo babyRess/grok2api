@@ -1,0 +1,20 @@
+meta {
+  name: Accounts + quota
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/auth/grok-build/accounts
+  body: none
+  auth: none
+}
+
+headers {
+  x-api-key: {{apiKey}}
+}
+
+docs {
+  # Accounts + quota
+  Redacted account list with weekly SuperGrok + monthly credit quota.
+}

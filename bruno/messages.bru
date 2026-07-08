@@ -1,0 +1,34 @@
+meta {
+  name: Messages (Anthropic)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  content-type: application/json
+  x-api-key: {{apiKey}}
+}
+
+body:json {
+  {
+    "model": "{{model}}",
+    "max_tokens": 256,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Count from 1 to 20 in a single line, then stop."
+      }
+    ]
+  }
+}
+
+docs {
+  # Anthropic Messages
+  Non-streaming proxy call. Check `usage.output_tokens` in the response.
+}

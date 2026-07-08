@@ -1,0 +1,35 @@
+meta {
+  name: Messages stream (Anthropic)
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  content-type: application/json
+  x-api-key: {{apiKey}}
+}
+
+body:json {
+  {
+    "model": "{{model}}",
+    "max_tokens": 512,
+    "stream": true,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Write a short paragraph about what a reverse proxy is. Keep it under 120 words."
+      }
+    ]
+  }
+}
+
+docs {
+  # Anthropic Messages (stream)
+  SSE stream. Use `bun scripts/benchmark-tokens.ts` for accurate tokens/s.
+}
