@@ -72,7 +72,7 @@ describe('payload sanitization', () => {
         reasoningEffort: 'high',
         prompt_cache_key: 'existing-session',
       },
-      'grok-build',
+      'grok-composer-2.5-fast', // This model should never support reasoning.effort
       'new-session',
       process.cwd(),
     );

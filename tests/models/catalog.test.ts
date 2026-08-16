@@ -8,10 +8,21 @@ afterEach(() => {
 });
 
 describe('model catalog', () => {
-  it('reports reasoning-effort support by normalized model name', () => {
+  it('reports reasoning-effort support by model definition', () => {
+    // Known reasoning models
     expect(supportsReasoningEffort('grok-4.3')).toBe(true);
+    expect(supportsReasoningEffort('grok-4.20-0309-reasoning')).toBe(true);
+    expect(supportsReasoningEffort('grok-4.20-multi-agent-0309')).toBe(true);
+
+    // Non-reasoning models
     expect(supportsReasoningEffort('grok-build/GROK-COMPOSER-2.5-fast')).toBe(false);
     expect(supportsReasoningEffort('grok-4.20-0309-non-reasoning')).toBe(false);
+    expect(supportsReasoningEffort('grok-composer-2.5-fast')).toBe(false);
+
+    // Manual models should work too
+    process.env.GROK_BUILD_MODELS = 'grok-4.5-new-reasoning,grok-5.0-non-reasoning';
+    expect(supportsReasoningEffort('grok-4.5-new-reasoning')).toBe(true);
+    expect(supportsReasoningEffort('grok-5.0-non-reasoning')).toBe(false);
   });
 
   it('uses fallback models when no override is configured', () => {
@@ -37,8 +48,9 @@ describe('model catalog', () => {
     });
   });
 
-  it('filters, reorders, and fills unknown model overrides', () => {
-    process.env.GROK_BUILD_MODELS = ' custom-model , composer-2.5-fast , grok-build ,, grok-4.3 ';
+  it('filters, reorders, and fills unknown model overrides intelligently', () => {
+    process.env.GROK_BUILD_MODELS =
+      ' custom-model , composer-2.5-fast , grok-build ,, grok-4.3 , my-non-reasoning-model ';
 
     const models = resolveModels();
 
@@ -47,14 +59,25 @@ describe('model catalog', () => {
       'composer-2.5-fast',
       'grok-build',
       'grok-4.3',
+      'my-non-reasoning-model',
     ]);
+
+    // Unknown model defaults to reasoning=true + image support
     expect(models[0]).toMatchObject({
       name: 'custom-model',
       reasoning: true,
-      input: ['text'],
+      input: ['text', 'image'],
       contextWindow: 1_000_000,
       maxTokens: 30_000,
     });
+
+    // Non-reasoning name pattern is detected
+    expect(models[4]).toMatchObject({
+      name: 'my-non-reasoning-model',
+      reasoning: false,
+      input: ['text', 'image'],
+    });
+
     expect(models[1]).toMatchObject({
       name: 'Composer 2.5 Fast (Grok Build)',
       input: ['text', 'image'],

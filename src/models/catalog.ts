@@ -106,7 +106,13 @@ const FALLBACK_MODELS: GrokBuildModelConfig[] = [
   },
 ];
 
-const EFFORT_CAPABLE_PREFIXES = ['grok-3-mini', 'grok-4.20-multi-agent', 'grok-4.3'];
+const EFFORT_CAPABLE_PREFIXES = [
+  'grok-3-mini',
+  'grok-4.3',
+  'grok-4.20',
+  'grok-4.5', // future models
+];
+
 const MODEL_ALIASES = new Map([['composer-2.5-fast', 'grok-composer-2.5-fast']]);
 
 export function upstreamModelId(modelId: string): string {
@@ -114,22 +120,50 @@ export function upstreamModelId(modelId: string): string {
   return MODEL_ALIASES.get(name.toLowerCase()) ?? modelId;
 }
 
+/**
+ * Returns whether a model supports the reasoning.effort parameter.
+ * Respects the model definition from resolveModels() when GROK_BUILD_MODELS is set.
+ */
 export function supportsReasoningEffort(modelId: string): boolean {
   const name = upstreamModelId(modelId).split('/').at(-1) ?? modelId;
-  const model = resolveModels().find((entry) => entry.id.toLowerCase() === name.toLowerCase());
-  if (!EFFORT_CAPABLE_PREFIXES.some((prefix) => name.toLowerCase().startsWith(prefix))) {
-    return false;
+  const lowerName = name.toLowerCase();
+
+  const model = resolveModels().find((entry) => entry.id.toLowerCase() === lowerName);
+
+  // If we have an explicit model definition, trust it
+  if (model) {
+    if (!model.reasoning) return false;
+    // Models with thinkingLevelMap typically don't support effort parameter
+    if (model.thinkingLevelMap) return false;
+    return true;
   }
-  if (!model?.reasoning) return false;
-  if (!model.thinkingLevelMap) return true;
-  return Object.values(model.thinkingLevelMap).some((level) => level !== null && level !== 'none');
+
+  // Fallback: check prefixes for unknown models (when GROK_BUILD_MODELS not set)
+  // Also respect non-reasoning naming convention and known non-reasoning models
+  const isNonReasoning =
+    lowerName.includes('non-reasoning') ||
+    lowerName.includes('no-reasoning') ||
+    lowerName.includes('composer-2.5-fast');
+  if (isNonReasoning) return false;
+
+  return EFFORT_CAPABLE_PREFIXES.some((prefix) => lowerName.startsWith(prefix));
 }
 
 // ─── GROK_BUILD_MODELS env override ───────────────────────────────────────────
 
 /**
- * Resolve the active model list.  If `GROK_BUILD_MODELS` is set,
+ * Resolve the active model list. If `GROK_BUILD_MODELS` is set,
  * it filters/reorders the fallback list; unknown IDs get sensible defaults.
+ *
+ * To manually add a model:
+ *
+ *   GROK_BUILD_MODELS=grok-4.5-new,grok-4.20-0309-reasoning
+ *
+ * Unknown models default to:
+ * - reasoning: true
+ * - contextWindow: 1M
+ * - maxTokens: 30K
+ * - Supports reasoning.effort (unless name contains "non-reasoning")
  */
 export function resolveModels(): GrokBuildModelConfig[] {
   const env = (process.env.GROK_BUILD_MODELS || '')
@@ -146,14 +180,29 @@ export function resolveModels(): GrokBuildModelConfig[] {
     const aliasTarget = byId.get(upstreamModelId(id));
     if (aliasTarget) return { ...aliasTarget, id };
 
+    const isNonReasoning =
+      id.toLowerCase().includes('non-reasoning') || id.toLowerCase().includes('no-reasoning');
+
     return {
       id,
       name: id,
-      reasoning: true,
-      input: ['text'] as ('text' | 'image')[],
+      reasoning: !isNonReasoning,
+      input: ['text', 'image'] as ('text' | 'image')[],
       cost: COST_BUILD,
       contextWindow: 1_000_000,
       maxTokens: 30_000,
+      ...(isNonReasoning
+        ? {
+            thinkingLevelMap: {
+              off: 'none',
+              minimal: null,
+              low: null,
+              medium: null,
+              high: null,
+              xhigh: null,
+            },
+          }
+        : {}),
     };
   });
 }

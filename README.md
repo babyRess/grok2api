@@ -324,10 +324,77 @@ export GROK_BUILD_CALLBACK_URL="https://your-vps-domain.example/callback"
 | `grok-4.20-0309-non-reasoning` | 2M | 30K | - | text, image |
 | `grok-4.20-multi-agent-0309` | 2M | 30K | yes | text, image |
 
-Override with `GROK_BUILD_MODELS` (comma-separated model IDs). Unknown IDs get
-sensible defaults.
+**Adding models manually:**
+
+Set the `GROK_BUILD_MODELS` environment variable with a comma-separated list:
+
+```bash
+# Use specific models (reorders and filters the catalog)
+GROK_BUILD_MODELS=grok-4.20-0309-reasoning,grok-4.20-multi-agent-0309
+
+# Add completely new/custom models (gets smart defaults)
+GROK_BUILD_MODELS=grok-4.5-new,grok-4.20-0309-reasoning,my-custom-model
+```
+
+**How manual models work:**
+- Known models use their exact configuration from the catalog
+- Unknown models default to: reasoning=`true`, 1M context, 30K max tokens, image support
+- Models with "non-reasoning" in the name are automatically marked as `reasoning: false`
+- `supportsReasoningEffort()` now works correctly for all models (this was previously broken)
+
+Update `.env` or use:
+```bash
+export GROK_BUILD_MODELS=grok-4.20-0309-reasoning,grok-4.5-experimental
+bun run api
+```
+
+Then check available models:
+```bash
+curl http://127.0.0.1:8990/v1/models
+```
 
 ## Docker
+
+```bash
+cp .env.example .env
+mkdir -p data
+cat > data/accounts.json <<'EOF'
+{
+  "mode": "balanced",
+  "groups": []
+}
+EOF
+docker compose up --build
+```
+
+Clients should use `http://127.0.0.1:8990/v1` as the Anthropic-compatible base
+URL.
+
+For a Docker VPS, edit `.env` like this:
+
+```bash
+GROK_BUILD_API_HOST=0.0.0.0
+GROK_BUILD_API_PORT=8990
+GROK_BUILD_API_KEY=local-client-key
+
+GROK_BUILD_ACCOUNTS_FILE=/data/accounts.json
+GROK_BUILD_ACCOUNT_ROTATION=balanced
+
+GROK_BUILD_CALLBACK_HOST=0.0.0.0
+GROK_BUILD_CALLBACK_PORT=56122
+GROK_BUILD_CALLBACK_PUBLIC_HOST=your-vps-domain-or-ip
+GROK_BUILD_CALLBACK_PUBLIC_PORT=56122
+GROK_BUILD_CALLBACK_PROTOCOL=http
+# Example: add custom models
+# GROK_BUILD_MODELS=grok-4.20-0309-reasoning,grok-4.5-experimental
+```
+
+Then run:
+
+```bash
+docker compose up -d --build
+docker compose logs -f open-grok-build
+```
 
 ```bash
 cp .env.example .env
